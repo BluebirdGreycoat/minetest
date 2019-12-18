@@ -25,6 +25,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <fstream>
 #include <thread>
 #include <mutex>
+#if !defined(_WIN32)  // POSIX
+	#include <unistd.h>
+#endif
 #include "irrlichttypes.h"
 
 class ILogOutput;
@@ -37,6 +40,12 @@ enum LogLevel {
 	LL_INFO,
 	LL_VERBOSE,
 	LL_MAX,
+};
+
+enum LogColor {
+	LOG_COLOR_NEVER,
+	LOG_COLOR_ALWAYS,
+	LOG_COLOR_AUTO,
 };
 
 typedef u8 LogLevelMask;
@@ -63,6 +72,8 @@ public:
 
 	static LogLevel stringToLevel(const std::string &name);
 	static const std::string getLevelLabel(LogLevel lev);
+
+	static LogColor color_mode;
 
 private:
 	void logToOutputsRaw(LogLevel, const std::string &line);
@@ -106,20 +117,55 @@ public:
 	StreamLogOutput(std::ostream &stream) :
 		m_stream(stream)
 	{
+#if !defined(_WIN32)
+		is_tty = isatty(fileno(stdout));
+#else
+		is_tty = false;
+#endif
 	}
 
 	void logRaw(LogLevel lev, const std::string &line)
 	{
+		bool colored_message = (Logger::color_mode == LOG_COLOR_ALWAYS) ||
+			(Logger::color_mode == LOG_COLOR_AUTO && is_tty);
+		if (colored_message)
+			switch (lev) {
+			case LL_ERROR:
+				// error is red
+				m_stream << "\033[91m";
+				break;
+			case LL_WARNING:
+				// warning is yellow
+				m_stream << "\033[93m";
+				break;
+			case LL_INFO:
+				// info is a bit dark
+				m_stream << "\033[37m";
+				break;
+			case LL_VERBOSE:
+				// verbose is darker than info
+				m_stream << "\033[2m";
+				break;
+			default:
+				// action is white
+				colored_message = false;
+			}
+
 		m_stream << line << std::endl;
+
+		if (colored_message)
+			// reset to white color
+			m_stream << "\033[0m";
 	}
 
 private:
 	std::ostream &m_stream;
+	bool is_tty;
 };
 
 class FileLogOutput : public ICombinedLogOutput {
 public:
-	void open(const std::string &filename);
+	void setFile(const std::string &filename, s64 file_size_max);
 
 	void logRaw(LogLevel lev, const std::string &line)
 	{

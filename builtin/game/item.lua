@@ -33,7 +33,7 @@ function core.get_pointed_thing_position(pointed_thing, above)
 		-- The position where a node would be dug
 		return pointed_thing.under
 	elseif pointed_thing.type == "object" then
-		return pointed_thing.ref and pointed_thing.ref:getpos()
+		return pointed_thing.ref and pointed_thing.ref:get_pos()
 	end
 end
 
@@ -197,7 +197,7 @@ function core.get_node_drops(node, toolname)
 		return {nodename}
 	elseif type(drop) == "string" then
 		-- itemstring drop
-		return {drop}
+		return drop ~= "" and {drop} or {}
 	elseif drop.items == nil then
 		-- drop = {} to disable default drop
 		return {}
@@ -206,7 +206,6 @@ function core.get_node_drops(node, toolname)
 	-- Extended drop table
 	local got_items = {}
 	local got_count = 0
-	local _, item, tool
 	for _, item in ipairs(drop.items) do
 		local good_rarity = true
 		local good_tool = true
@@ -251,17 +250,13 @@ local function user_name(user)
 	return user and user:get_player_name() or ""
 end
 
-local function is_protected(pos, name)
-	return core.is_protected(pos, name) and
-		not minetest.check_player_privs(name, "protection_bypass")
-end
-
 -- Returns a logging function. For empty names, does not log.
 local function make_log(name)
 	return name ~= "" and core.log or function() end
 end
 
-function core.item_place_node(itemstack, placer, pointed_thing, param2)
+function core.item_place_node(itemstack, placer, pointed_thing, param2,
+		prevent_after_place)
 	local def = itemstack:get_definition()
 	if def.type ~= "node" or pointed_thing.type ~= "node" then
 		return itemstack, false
@@ -301,7 +296,7 @@ function core.item_place_node(itemstack, placer, pointed_thing, param2)
 		place_to = {x = under.x, y = under.y, z = under.z}
 	end
 
-	if is_protected(place_to, playername) then
+	if core.is_protected(place_to, playername) then
 		log("action", playername
 				.. " tried to place " .. def.name
 				.. " at protected position "
@@ -330,7 +325,7 @@ function core.item_place_node(itemstack, placer, pointed_thing, param2)
 	-- Calculate the direction for furnaces and chests and stuff
 	elseif (def.paramtype2 == "facedir" or
 			def.paramtype2 == "colorfacedir") and not param2 then
-		local placer_pos = placer and placer:getpos()
+		local placer_pos = placer and placer:get_pos()
 		if placer_pos then
 			local dir = {
 				x = above.x - placer_pos.x,
@@ -375,7 +370,7 @@ function core.item_place_node(itemstack, placer, pointed_thing, param2)
 	local take_item = true
 
 	-- Run callback
-	if def.after_place_node then
+	if def.after_place_node and not prevent_after_place then
 		-- Deepcopy place_to and pointed_thing because callback can modify it
 		local place_to_copy = {x=place_to.x, y=place_to.y, z=place_to.z}
 		local pointed_thing_copy = copy_pointed_thing(pointed_thing)
@@ -403,6 +398,7 @@ function core.item_place_node(itemstack, placer, pointed_thing, param2)
 	return itemstack, true
 end
 
+-- deprecated, item_place does not call this
 function core.item_place_object(itemstack, placer, pointed_thing)
 	local pos = core.get_pointed_thing_position(pointed_thing, true)
 	if pos ~= nil then
@@ -424,6 +420,7 @@ function core.item_place(itemstack, placer, pointed_thing, param2)
 		end
 	end
 
+	-- Place if node, otherwise do nothing
 	if itemstack:get_definition().type == "node" then
 		return core.item_place_node(itemstack, placer, pointed_thing, param2)
 	end
@@ -468,6 +465,11 @@ function core.do_item_eat(hp_change, replace_with_item, itemstack, user, pointed
 	if itemstack:take_item() ~= nil then
 		user:set_hp(user:get_hp() + hp_change)
 
+		local def = itemstack:get_definition()
+		if def and def.sound and def.sound.eat then
+			minetest.sound_play(def.sound.eat, { pos = user:get_pos(), max_hear_distance = 16 })
+		end
+
 		if replace_with_item then
 			if itemstack:is_empty() then
 				itemstack:add_item(replace_with_item)
@@ -477,7 +479,7 @@ function core.do_item_eat(hp_change, replace_with_item, itemstack, user, pointed
 				if inv and inv:room_for_item("main", {name=replace_with_item}) then
 					inv:add_item("main", replace_with_item)
 				else
-					local pos = user:getpos()
+					local pos = user:get_pos()
 					pos.y = math.floor(pos.y + 0.5)
 					core.add_item(pos, replace_with_item)
 				end
@@ -516,7 +518,8 @@ function core.handle_node_drops(pos, drops, digger)
 		end
 	else
 		give_item = function(item)
-			return item
+			-- itemstring to ItemStack for left:is_empty()
+			return ItemStack(item)
 		end
 	end
 
@@ -545,7 +548,7 @@ function core.node_dig(pos, node, digger)
 		return
 	end
 
-	if is_protected(pos, diggername) then
+	if core.is_protected(pos, diggername) then
 		log("action", diggername
 				.. " tried to dig " .. node.name
 				.. " at protected position "
@@ -578,6 +581,20 @@ function core.node_dig(pos, node, digger)
 		digger:set_wielded_item(wielded)
 	end
 
+	-- Check to see if metadata should be preserved.
+	if def and def.preserve_metadata then
+		local oldmeta = core.get_meta(pos):to_table().fields
+		-- Copy pos and node because the callback can modify them.
+		local pos_copy = {x=pos.x, y=pos.y, z=pos.z}
+		local node_copy = {name=node.name, param1=node.param1, param2=node.param2}
+		local drop_stacks = {}
+		for k, v in pairs(drops) do
+			drop_stacks[k] = ItemStack(v)
+		end
+		drops = drop_stacks
+		def.preserve_metadata(pos_copy, node_copy, oldmeta, drops)
+	end
+
 	-- Handle drops
 	core.handle_node_drops(pos, drops, digger)
 
@@ -598,15 +615,10 @@ function core.node_dig(pos, node, digger)
 	end
 
 	-- Run script hook
-	local _, callback
 	for _, callback in ipairs(core.registered_on_dignodes) do
 		local origin = core.callback_origins[callback]
 		if origin then
 			core.set_last_run_mod(origin.mod)
-			--print("Running " .. tostring(callback) ..
-			--	" (a " .. origin.name .. " callback in " .. origin.mod .. ")")
-		else
-			--print("No data associated with callback")
 		end
 
 		-- Copy pos and node because callback can modify them

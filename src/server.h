@@ -24,9 +24,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "hud.h"
 #include "gamedef.h"
 #include "serialization.h" // For SER_FMT_VER_INVALID
-#include "mods.h"
+#include "content/mods.h"
 #include "inventorymanager.h"
-#include "subgame.h"
+#include "content/subgames.h"
 #include "tileanimation.h" // struct TileAnimationParams
 #include "network/peerhandler.h"
 #include "network/address.h"
@@ -45,7 +45,7 @@ class ChatEvent;
 struct ChatEventChat;
 struct ChatInterface;
 class IWritableItemDefManager;
-class IWritableNodeDefManager;
+class NodeDefManager;
 class IWritableCraftDefManager;
 class BanManager;
 class EventManager;
@@ -53,13 +53,16 @@ class Inventory;
 class ModChannelMgr;
 class RemotePlayer;
 class PlayerSAO;
+struct PlayerHPChangeReason;
 class IRollbackManager;
 struct RollbackAction;
 class EmergeManager;
 class ServerScripting;
 class ServerEnvironment;
 struct SimpleSoundSpec;
+struct CloudParams;
 class ServerThread;
+class ServerModManager;
 
 enum ClientDeletionReason {
 	CDR_LEAVE,
@@ -125,6 +128,7 @@ public:
 	~Server();
 	DISABLE_CLASS_COPY(Server);
 
+	void init();
 	void start();
 	void stop();
 	// This is mainly a way to pass the time to the server.
@@ -185,20 +189,20 @@ public:
 		This is accessed by the map, which is inside the environment,
 		so it shouldn't be a problem.
 	*/
-	void onMapEditEvent(MapEditEvent *event);
+	void onMapEditEvent(const MapEditEvent &event);
 
 	/*
 		Shall be called with the environment and the connection locked.
 	*/
 	Inventory* getInventory(const InventoryLocation &loc);
-	void setInventoryModified(const InventoryLocation &loc, bool playerSend = true);
+	void setInventoryModified(const InventoryLocation &loc);
 
 	// Connection must be locked when called
 	std::wstring getStatusString();
 	inline double getUptime() const { return m_uptime.m_value; }
 
 	// read shutdown state
-	inline bool getShutdownRequested() const { return m_shutdown_requested; }
+	inline bool isShutdownRequested() const { return m_shutdown_state.is_requested; }
 
 	// request server to shutdown
 	void requestShutdown(const std::string &msg, bool reconnect, float delay = 0.0f);
@@ -214,6 +218,7 @@ public:
 	bool checkPriv(const std::string &name, const std::string &priv);
 	void reportPrivsModified(const std::string &name=""); // ""=all
 	void reportInventoryFormspecModified(const std::string &name);
+	void reportFormspecPrependModified(const std::string &name);
 
 	void setIpBanned(const std::string &ip, const std::string &name);
 	void unsetIpBanned(const std::string &ip_or_name);
@@ -224,7 +229,7 @@ public:
 	void spawnParticle(const std::string &playername,
 		v3f pos, v3f velocity, v3f acceleration,
 		float expirationtime, float size,
-		bool collisiondetection, bool collision_removal,
+		bool collisiondetection, bool collision_removal, bool object_collision,
 		bool vertical, const std::string &texture,
 		const struct TileAnimationParams &animation, u8 glow);
 
@@ -234,7 +239,7 @@ public:
 		v3f minacc, v3f maxacc,
 		float minexptime, float maxexptime,
 		float minsize, float maxsize,
-		bool collisiondetection, bool collision_removal,
+		bool collisiondetection, bool collision_removal, bool object_collision,
 		ServerActiveObject *attached,
 		bool vertical, const std::string &texture,
 		const std::string &playername, const struct TileAnimationParams &animation,
@@ -243,7 +248,9 @@ public:
 	void deleteParticleSpawner(const std::string &playername, u32 id);
 
 	// Creates or resets inventory
-	Inventory* createDetachedInventory(const std::string &name, const std::string &player="");
+	Inventory *createDetachedInventory(const std::string &name,
+			const std::string &player = "");
+	bool removeDetachedInventory(const std::string &name);
 
 	// Envlock and conlock should be locked when using scriptapi
 	ServerScripting *getScriptIface(){ return m_script; }
@@ -256,18 +263,17 @@ public:
 	// IGameDef interface
 	// Under envlock
 	virtual IItemDefManager* getItemDefManager();
-	virtual INodeDefManager* getNodeDefManager();
+	virtual const NodeDefManager* getNodeDefManager();
 	virtual ICraftDefManager* getCraftDefManager();
 	virtual u16 allocateUnknownNodeId(const std::string &name);
-	virtual MtEventManager* getEventManager();
 	IRollbackManager *getRollbackManager() { return m_rollback; }
 	virtual EmergeManager *getEmergeManager() { return m_emerge; }
 
 	IWritableItemDefManager* getWritableItemDefManager();
-	IWritableNodeDefManager* getWritableNodeDefManager();
+	NodeDefManager* getWritableNodeDefManager();
 	IWritableCraftDefManager* getWritableCraftDefManager();
 
-	virtual const std::vector<ModSpec> &getMods() const { return m_mods; }
+	virtual const std::vector<ModSpec> &getMods() const;
 	virtual const ModSpec* getModSpec(const std::string &modname) const;
 	void getModNames(std::vector<std::string> &modlist);
 	std::string getBuiltinLuaPath();
@@ -290,27 +296,19 @@ public:
 	bool hudChange(RemotePlayer *player, u32 id, HudElementStat stat, void *value);
 	bool hudSetFlags(RemotePlayer *player, u32 flags, u32 mask);
 	bool hudSetHotbarItemcount(RemotePlayer *player, s32 hotbar_itemcount);
-	s32 hudGetHotbarItemcount(RemotePlayer *player) const;
-	void hudSetHotbarImage(RemotePlayer *player, std::string name);
-	std::string hudGetHotbarImage(RemotePlayer *player);
-	void hudSetHotbarSelectedImage(RemotePlayer *player, std::string name);
-	const std::string &hudGetHotbarSelectedImage(RemotePlayer *player) const;
+	void hudSetHotbarImage(RemotePlayer *player, const std::string &name);
+	void hudSetHotbarSelectedImage(RemotePlayer *player, const std::string &name);
 
 	Address getPeerAddress(session_t peer_id);
 
-	bool setLocalPlayerAnimations(RemotePlayer *player, v2s32 animation_frames[4],
+	void setLocalPlayerAnimations(RemotePlayer *player, v2s32 animation_frames[4],
 			f32 frame_speed);
-	bool setPlayerEyeOffset(RemotePlayer *player, v3f first, v3f third);
+	void setPlayerEyeOffset(RemotePlayer *player, const v3f &first, const v3f &third);
 
-	bool setSky(RemotePlayer *player, const video::SColor &bgcolor,
+	void setSky(RemotePlayer *player, const video::SColor &bgcolor,
 			const std::string &type, const std::vector<std::string> &params,
 			bool &clouds);
-	bool setClouds(RemotePlayer *player, float density,
-			const video::SColor &color_bright,
-			const video::SColor &color_ambient,
-			float height,
-			float thickness,
-			const v2f &speed);
+	void setClouds(RemotePlayer *player, const CloudParams &params);
 
 	bool overrideDayNightRatio(RemotePlayer *player, bool do_override, float brightness);
 
@@ -333,10 +331,14 @@ public:
 
 	void printToConsoleOnly(const std::string &text);
 
-	void SendPlayerHPOrDie(PlayerSAO *player);
+	void SendPlayerHPOrDie(PlayerSAO *player, const PlayerHPChangeReason &reason);
 	void SendPlayerBreath(PlayerSAO *sao);
-	void SendInventory(PlayerSAO* playerSAO);
+	void SendInventory(PlayerSAO *playerSAO, bool incremental);
 	void SendMovePlayer(session_t peer_id);
+	void SendPlayerSpeed(session_t peer_id, const v3f &added_vel);
+	void SendPlayerFov(session_t peer_id);
+
+	void sendDetachedInventories(session_t peer_id, bool incremental);
 
 	virtual bool registerModStorage(ModMetadata *storage);
 	virtual void unregisterModStorage(const std::string &name);
@@ -346,6 +348,9 @@ public:
 	bool sendModChannelMessage(const std::string &channel, const std::string &message);
 	ModChannel *getModChannel(const std::string &channel);
 
+	// Send block to specific player only
+	bool SendBlock(session_t peer_id, const v3s16 &blockpos);
+
 	// Bind address
 	Address m_bind_addr;
 
@@ -353,9 +358,25 @@ public:
 	std::mutex m_env_mutex;
 
 private:
-
 	friend class EmergeThread;
 	friend class RemoteClient;
+	friend class TestServerShutdownState;
+
+	struct ShutdownState {
+		friend class TestServerShutdownState;
+		public:
+			bool is_requested = false;
+			bool should_reconnect = false;
+			std::string message;
+
+			void reset();
+			void trigger(float delay, const std::string &msg, bool reconnect);
+			void tick(float dtime, Server *server);
+			std::wstring getShutdownTimerMessage() const;
+			bool isTimerRunning() const { return m_timer > 0.0f; }
+		private:
+			float m_timer = 0.0f;
+	};
 
 	void SendMovement(session_t peer_id);
 	void SendHP(session_t peer_id, u16 hp);
@@ -366,13 +387,14 @@ private:
 	void SendDeathscreen(session_t peer_id, bool set_camera_point_target,
 		v3f camera_point_target);
 	void SendItemDef(session_t peer_id, IItemDefManager *itemdef, u16 protocol_version);
-	void SendNodeDef(session_t peer_id, INodeDefManager *nodedef, u16 protocol_version);
+	void SendNodeDef(session_t peer_id, const NodeDefManager *nodedef,
+		u16 protocol_version);
 
 	/* mark blocks not sent for all clients */
 	void SetBlocksNotSent(std::map<v3s16, MapBlock *>& block);
 
 
-	void SendChatMessage(session_t peer_id, const ChatMessage &message);
+	virtual void SendChatMessage(session_t peer_id, const ChatMessage &message);
 	void SendTimeOfDay(session_t peer_id, u16 time, f32 time_speed);
 	void SendPlayerHP(session_t peer_id);
 
@@ -381,6 +403,7 @@ private:
 	void SendEyeOffset(session_t peer_id, v3f first, v3f third);
 	void SendPlayerPrivileges(session_t peer_id);
 	void SendPlayerInventoryFormspec(session_t peer_id);
+	void SendPlayerFormspecPrepend(session_t peer_id);
 	void SendShowFormspecMessage(session_t peer_id, const std::string &formspec,
 		const std::string &formname);
 	void SendHUDAdd(session_t peer_id, u32 id, HudElement *form);
@@ -391,12 +414,7 @@ private:
 	void SendSetSky(session_t peer_id, const video::SColor &bgcolor,
 			const std::string &type, const std::vector<std::string> &params,
 			bool &clouds);
-	void SendCloudParams(session_t peer_id, float density,
-			const video::SColor &color_bright,
-			const video::SColor &color_ambient,
-			float height,
-			float thickness,
-			const v2f &speed);
+	void SendCloudParams(session_t peer_id, const CloudParams &params);
 	void SendOverrideDayNightRatio(session_t peer_id, bool do_override, float ratio);
 	void broadcastModChannelMessage(const std::string &channel,
 			const std::string &message, session_t from_peer);
@@ -407,12 +425,14 @@ private:
 		far_d_nodes are ignored and their peer_ids are added to far_players
 	*/
 	// Envlock and conlock should be locked when calling these
-	void sendRemoveNode(v3s16 p, u16 ignore_id=0,
-			std::vector<u16> *far_players=NULL, float far_d_nodes=100);
-	void sendAddNode(v3s16 p, MapNode n, u16 ignore_id=0,
-			std::vector<u16> *far_players=NULL, float far_d_nodes=100,
-			bool remove_metadata=true);
-	void setBlockNotSent(v3s16 p);
+	void sendRemoveNode(v3s16 p, std::unordered_set<u16> *far_players = nullptr,
+			float far_d_nodes = 100);
+	void sendAddNode(v3s16 p, MapNode n,
+			std::unordered_set<u16> *far_players = nullptr,
+			float far_d_nodes = 100, bool remove_metadata = true);
+
+	void sendMetadataChanged(const std::list<v3s16> &meta_updates,
+			float far_d_nodes = 100);
 
 	// Environment and Connection must be locked when called
 	void SendBlockNoLock(session_t peer_id, MapBlock *block, u8 ver, u16 net_proto_version);
@@ -426,7 +446,6 @@ private:
 			const std::vector<std::string> &tosend);
 
 	void sendDetachedInventory(const std::string &name, session_t peer_id);
-	void sendDetachedInventories(session_t peer_id);
 
 	// Adds a ParticleSpawner on peer with peer_id (PEER_ID_INEXISTENT == all)
 	void SendAddParticleSpawner(session_t peer_id, u16 protocol_version,
@@ -436,7 +455,7 @@ private:
 		v3f minacc, v3f maxacc,
 		float minexptime, float maxexptime,
 		float minsize, float maxsize,
-		bool collisiondetection, bool collision_removal,
+		bool collisiondetection, bool collision_removal, bool object_collision,
 		u16 attached_id,
 		bool vertical, const std::string &texture, u32 id,
 		const struct TileAnimationParams &animation, u8 glow);
@@ -447,24 +466,24 @@ private:
 	void SendSpawnParticle(session_t peer_id, u16 protocol_version,
 		v3f pos, v3f velocity, v3f acceleration,
 		float expirationtime, float size,
-		bool collisiondetection, bool collision_removal,
+		bool collisiondetection, bool collision_removal, bool object_collision,
 		bool vertical, const std::string &texture,
 		const struct TileAnimationParams &animation, u8 glow);
 
-	u32 SendActiveObjectRemoveAdd(session_t peer_id, const std::string &datas);
+	void SendActiveObjectRemoveAdd(RemoteClient *client, PlayerSAO *playersao);
 	void SendActiveObjectMessages(session_t peer_id, const std::string &datas,
 		bool reliable = true);
-	void SendCSMFlavourLimits(session_t peer_id);
+	void SendCSMRestrictionFlags(session_t peer_id);
 
 	/*
 		Something random
 	*/
 
-	void DiePlayer(session_t peer_id);
+	void DiePlayer(session_t peer_id, const PlayerHPChangeReason &reason);
 	void RespawnPlayer(session_t peer_id);
 	void DeleteClient(session_t peer_id, ClientDeletionReason reason);
 	void UpdateCrafting(RemotePlayer *player);
-	bool checkInteractDistance(RemotePlayer *player, const f32 d, const std::string what);
+	bool checkInteractDistance(RemotePlayer *player, const f32 d, const std::string &what);
 
 	void handleChatInterfaceEvent(ChatEvent *evt);
 
@@ -497,7 +516,6 @@ private:
 	/*
 		Variables
 	*/
-
 	// World directory
 	std::string m_path_world;
 	// Subgame specification
@@ -531,7 +549,6 @@ private:
 
 	// Rollback manager (behind m_env_mutex)
 	IRollbackManager *m_rollback = nullptr;
-	bool m_enable_rollback_recording = false; // Updated once in a while
 
 	// Emerge manager
 	EmergeManager *m_emerge = nullptr;
@@ -544,7 +561,7 @@ private:
 	IWritableItemDefManager *m_itemdef;
 
 	// Node definition manager
-	IWritableNodeDefManager *m_nodedef;
+	NodeDefManager *m_nodedef;
 
 	// Craft definition manager
 	IWritableCraftDefManager *m_craftdef;
@@ -553,12 +570,11 @@ private:
 	EventManager *m_event;
 
 	// Mods
-	std::vector<ModSpec> m_mods;
+	std::unique_ptr<ServerModManager> m_modmgr;
 
 	/*
 		Threads
 	*/
-
 	// A buffer for time steps
 	// step() increments and AsyncRunStep() run by m_thread reads it.
 	float m_step_dtime = 0.0f;
@@ -573,14 +589,14 @@ private:
 	/*
 		Time related stuff
 	*/
-
 	// Timer for sending time of day over network
 	float m_time_of_day_send_timer = 0.0f;
 	// Uptime of server in seconds
 	MutexedVariable<double> m_uptime;
+
 	/*
-	 Client interface
-	 */
+	 	Client interface
+	*/
 	ClientInterface m_clients;
 
 	/*
@@ -590,14 +606,13 @@ private:
 	*/
 	std::queue<con::PeerChange> m_peer_change_queue;
 
+	std::unordered_map<session_t, std::string> m_formspec_state_data;
+
 	/*
 		Random stuff
 	*/
 
-	bool m_shutdown_requested = false;
-	std::string m_shutdown_msg;
-	bool m_shutdown_ask_reconnect = false;
-	float m_shutdown_timer = 0.0f;
+	ShutdownState m_shutdown_state;
 
 	ChatInterface *m_admin_chat;
 	std::string m_admin_nick;
@@ -617,24 +632,12 @@ private:
 	*/
 	std::queue<MapEditEvent*> m_unsent_map_edit_queue;
 	/*
-		Set to true when the server itself is modifying the map and does
-		all sending of information by itself.
-		This is behind m_env_mutex
-	*/
-	bool m_ignore_map_edit_events = false;
-	/*
 		If a non-empty area, map edit events contained within are left
 		unsent. Done at map generation time to speed up editing of the
 		generated area, as it will be sent anyway.
 		This is behind m_env_mutex
 	*/
 	VoxelArea m_ignore_map_edit_events_area;
-	/*
-		If set to !=0, the incoming MapEditEvents are modified to have
-		this peed id as the disabled recipient
-		This is behind m_env_mutex
-	*/
-	session_t m_ignore_map_edit_events_peer_id = 0;
 
 	// media files known to server
 	std::unordered_map<std::string, MediaInfo> m_media;
@@ -656,9 +659,9 @@ private:
 	std::unordered_map<std::string, ModMetadata *> m_mod_storages;
 	float m_mod_storage_save_timer = 10.0f;
 
-	// CSM flavour limits byteflag
-	u64 m_csm_flavour_limits = CSMFlavourLimit::CSM_FL_NONE;
-	u32 m_csm_noderange_limit = 8;
+	// CSM restrictions byteflag
+	u64 m_csm_restriction_flags = CSMRestrictionFlags::CSM_RF_NONE;
+	u32 m_csm_restriction_noderange = 8;
 
 	// ModChannel manager
 	std::unique_ptr<ModChannelMgr> m_modchannel_mgr;

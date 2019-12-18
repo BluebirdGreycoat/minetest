@@ -274,6 +274,11 @@ public:
 
 	u32 getSendingCount() const { return m_blocks_sending.size(); }
 
+	bool isBlockSent(v3s16 p) const
+	{
+		return m_blocks_sent.find(p) != m_blocks_sent.end();
+	}
+
 	// Increments timeouts and removes timed-out blocks from list
 	// NOTE: This doesn't fix the server-not-sending-block bug
 	//       because it is related to emerging, not sending.
@@ -431,6 +436,9 @@ public:
 	/* get list of active client id's */
 	std::vector<session_t> getClientIDs(ClientState min_state=CS_Active);
 
+	/* mark block as not sent to active client sessions */
+	void markBlockposAsNotSent(const v3s16 &pos);
+
 	/* verify is server user limit was reached */
 	bool isUserLimitReached();
 
@@ -493,7 +501,7 @@ private:
 
 	// Connection
 	std::shared_ptr<con::Connection> m_con;
-	std::mutex m_clients_mutex;
+	std::recursive_mutex m_clients_mutex;
 	// Connected clients (behind the con mutex)
 	RemoteClientMap m_clients;
 	std::vector<std::string> m_clients_names; //for announcing masterserver

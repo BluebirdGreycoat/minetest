@@ -30,17 +30,24 @@ public:
 	// Returns true if script handled message
 	bool on_chat_message(const std::string &name, const std::string &message);
 
+	// Calls when mods are loaded
+	void on_mods_loaded();
+
 	// Calls on_shutdown handlers
 	void on_shutdown();
 
+	// Calls core.format_chat_message
+	std::string formatChatMessage(const std::string &name,
+		const std::string &message);
+
 	/* auth */
 	bool getAuth(const std::string &playername,
-			std::string *dst_password,
-			std::set<std::string> *dst_privs);
+		std::string *dst_password,
+		std::set<std::string> *dst_privs);
 	void createAuth(const std::string &playername,
-			const std::string &password);
+		const std::string &password);
 	bool setPassword(const std::string &playername,
-			const std::string &password);
+		const std::string &password);
 private:
 	void getAuthHandler();
 	void readPrivileges(int index, std::set<std::string> &result);

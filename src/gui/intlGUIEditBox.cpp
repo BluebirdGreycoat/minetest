@@ -32,13 +32,10 @@
 #include <util/numeric.h>
 #include "intlGUIEditBox.h"
 
-#if defined(_IRR_COMPILE_WITH_GUI_) && IRRLICHT_VERSION_MAJOR == 1 && IRRLICHT_VERSION_MINOR < 9
-
 #include "IGUISkin.h"
 #include "IGUIEnvironment.h"
 #include "IGUIFont.h"
 #include "IVideoDriver.h"
-//#include "rect.h"
 //#include "irrlicht/os.cpp"
 #include "porting.h"
 //#include "Keycodes.h"
@@ -116,6 +113,9 @@ intlGUIEditBox::~intlGUIEditBox()
 
 	if (Operator)
 		Operator->drop();
+
+	if (m_vscrollbar)
+		m_vscrollbar->drop();
 }
 
 
@@ -183,7 +183,6 @@ void intlGUIEditBox::enableOverrideColor(bool enable)
 
 bool intlGUIEditBox::isOverrideColorEnabled() const
 {
-	_IRR_IMPLEMENT_MANAGED_MARSHALLING_BUGFIX;
 	return OverrideColorEnabled;
 }
 
@@ -209,7 +208,6 @@ void intlGUIEditBox::updateAbsolutePosition()
 //! Checks if word wrap is enabled
 bool intlGUIEditBox::isWordWrapEnabled() const
 {
-	_IRR_IMPLEMENT_MANAGED_MARSHALLING_BUGFIX;
 	return WordWrap;
 }
 
@@ -224,7 +222,6 @@ void intlGUIEditBox::setMultiLine(bool enable)
 //! Checks if multi line editing is enabled
 bool intlGUIEditBox::isMultiLineEnabled() const
 {
-	_IRR_IMPLEMENT_MANAGED_MARSHALLING_BUGFIX;
 	return MultiLine;
 }
 
@@ -244,7 +241,6 @@ void intlGUIEditBox::setPasswordBox(bool passwordBox, wchar_t passwordChar)
 
 bool intlGUIEditBox::isPasswordBox() const
 {
-	_IRR_IMPLEMENT_MANAGED_MARSHALLING_BUGFIX;
 	return PasswordBox;
 }
 
@@ -277,7 +273,7 @@ bool intlGUIEditBox::OnEvent(const SEvent& event)
 			break;
 		case EET_KEY_INPUT_EVENT:
         {
-#if (defined(__linux__) || defined(__FreeBSD__))
+#if (defined(__linux__) || defined(__FreeBSD__)) || defined(__DragonFly__)
             // ################################################################
 			// ValkaTR:
             // This part is the difference from the original intlGUIEditBox
@@ -354,8 +350,7 @@ bool intlGUIEditBox::processKey(const SEvent& event)
 			break;
 		case KEY_KEY_X:
 			// cut to the clipboard
-			if (!PasswordBox && Operator && MarkBegin != MarkEnd)
-			{
+			if (!PasswordBox && Operator && MarkBegin != MarkEnd) {
 				const s32 realmbgn = MarkBegin < MarkEnd ? MarkBegin : MarkEnd;
 				const s32 realmend = MarkBegin < MarkEnd ? MarkEnd : MarkBegin;
 
@@ -364,8 +359,7 @@ bool intlGUIEditBox::processKey(const SEvent& event)
 				sc = Text.subString(realmbgn, realmend - realmbgn).c_str();
 				Operator->copyToClipboard(sc.c_str());
 
-				if (IsEnabled)
-				{
+				if (IsEnabled && m_writable) {
 					// delete
 					core::stringw s;
 					s = Text.subString(0, realmbgn);
@@ -380,7 +374,7 @@ bool intlGUIEditBox::processKey(const SEvent& event)
 			}
 			break;
 		case KEY_KEY_V:
-			if ( !IsEnabled )
+			if (!IsEnabled || !m_writable)
 				break;
 
 			// paste from the clipboard
@@ -636,7 +630,7 @@ bool intlGUIEditBox::processKey(const SEvent& event)
 		break;
 
 	case KEY_BACK:
-		if ( !this->IsEnabled )
+		if (!this->IsEnabled || !m_writable)
 			break;
 
 		if (!Text.empty()) {
@@ -675,7 +669,7 @@ bool intlGUIEditBox::processKey(const SEvent& event)
 		}
 		break;
 	case KEY_DELETE:
-		if ( !this->IsEnabled )
+		if (!this->IsEnabled || !m_writable)
 			break;
 
 		if (!Text.empty()) {
@@ -983,7 +977,6 @@ void intlGUIEditBox::setAutoScroll(bool enable)
 //! \return true if automatic scrolling is enabled, false if not
 bool intlGUIEditBox::isAutoScrollEnabled() const
 {
-	_IRR_IMPLEMENT_MANAGED_MARSHALLING_BUGFIX;
 	return AutoScroll;
 }
 
@@ -1351,7 +1344,7 @@ s32 intlGUIEditBox::getLineFromPos(s32 pos)
 
 void intlGUIEditBox::inputChar(wchar_t c)
 {
-	if (!IsEnabled)
+	if (!IsEnabled || !m_writable)
 		return;
 
 	if (c != 0)
@@ -1430,14 +1423,14 @@ void intlGUIEditBox::calculateScrollPos()
 		// todo: adjust scrollbar
 	}
 
-	// vertical scroll position
-	if (FrameRect.LowerRightCorner.Y < CurrentTextRect.LowerRightCorner.Y + VScrollPos)
-		VScrollPos = CurrentTextRect.LowerRightCorner.Y - FrameRect.LowerRightCorner.Y + VScrollPos;
+	if (!WordWrap && !MultiLine)
+		return;
 
-	else if (FrameRect.UpperLeftCorner.Y > CurrentTextRect.UpperLeftCorner.Y + VScrollPos)
-		VScrollPos = CurrentTextRect.UpperLeftCorner.Y - FrameRect.UpperLeftCorner.Y + VScrollPos;
-	else
-		VScrollPos = 0;
+	// vertical scroll position
+	if (FrameRect.LowerRightCorner.Y < CurrentTextRect.LowerRightCorner.Y)
+		VScrollPos += CurrentTextRect.LowerRightCorner.Y - FrameRect.LowerRightCorner.Y; // scrolling downwards
+	else if (FrameRect.UpperLeftCorner.Y > CurrentTextRect.UpperLeftCorner.Y)
+		VScrollPos += CurrentTextRect.UpperLeftCorner.Y - FrameRect.UpperLeftCorner.Y; // scrolling upwards
 
 	// todo: adjust scrollbar
 	if (m_vscrollbar)
@@ -1485,9 +1478,13 @@ void intlGUIEditBox::createVScrollBar()
 		}
 	}
 
+	RelativeRect.LowerRightCorner.X -= m_scrollbar_width + 4;
+
 	irr::core::rect<s32> scrollbarrect = FrameRect;
 	scrollbarrect.UpperLeftCorner.X += FrameRect.getWidth() - m_scrollbar_width;
-	m_vscrollbar = Environment->addScrollBar(false, scrollbarrect, getParent(), getID());
+	m_vscrollbar = new GUIScrollBar(Environment, getParent(), -1,
+			scrollbarrect, false, true);
+
 	m_vscrollbar->setVisible(false);
 	m_vscrollbar->setSmallStep(3 * fontHeight);
 	m_vscrollbar->setLargeStep(10 * fontHeight);
@@ -1509,6 +1506,7 @@ void intlGUIEditBox::updateVScrollBar()
 		if (scrollymax != m_vscrollbar->getMax()) {
 			// manage a newline or a deleted line
 			m_vscrollbar->setMax(scrollymax);
+			m_vscrollbar->setPageSize(s32(getTextDimension().Height));
 			calculateScrollPos();
 		} else {
 			// manage a newline or a deleted line
@@ -1521,6 +1519,7 @@ void intlGUIEditBox::updateVScrollBar()
 		s32 scrollymax = getTextDimension().Height - FrameRect.getHeight();
 		if (scrollymax != m_vscrollbar->getMax()) {
 			m_vscrollbar->setMax(scrollymax);
+			m_vscrollbar->setPageSize(s32(getTextDimension().Height));
 		}
 
 		if (!m_vscrollbar->isVisible() && MultiLine) {
@@ -1535,6 +1534,7 @@ void intlGUIEditBox::updateVScrollBar()
 			VScrollPos = 0;
 			m_vscrollbar->setPos(0);
 			m_vscrollbar->setMax(1);
+			m_vscrollbar->setPageSize(s32(getTextDimension().Height));
 			m_vscrollbar->setVisible(false);
 		}
 	}
@@ -1597,5 +1597,3 @@ void intlGUIEditBox::deserializeAttributes(io::IAttributes* in, io::SAttributeRe
 
 } // end namespace gui
 } // end namespace irr
-
-#endif // _IRR_COMPILE_WITH_GUI_

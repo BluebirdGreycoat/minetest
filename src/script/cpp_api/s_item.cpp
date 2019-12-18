@@ -115,7 +115,8 @@ bool ScriptApiItem::item_OnUse(ItemStack &item,
 	return true;
 }
 
-bool ScriptApiItem::item_OnSecondaryUse(ItemStack &item, ServerActiveObject *user)
+bool ScriptApiItem::item_OnSecondaryUse(ItemStack &item,
+		ServerActiveObject *user, const PointedThing &pointed)
 {
 	SCRIPTAPI_PRECHECKHEADER
 
@@ -126,8 +127,6 @@ bool ScriptApiItem::item_OnSecondaryUse(ItemStack &item, ServerActiveObject *use
 
 	LuaItemStack::create(L, item);
 	objectrefGetOrCreate(L, user);
-	PointedThing pointed;
-	pointed.type = POINTEDTHING_NOTHING;
 	pushPointedThing(pointed);
 	PCALL_RES(lua_pcall(L, 3, 1, error_handler));
 	if (!lua_isnil(L, -1)) {
@@ -177,7 +176,7 @@ bool ScriptApiItem::item_CraftPredict(ItemStack &item, ServerActiveObject *user,
 		const InventoryList *old_craft_grid, const InventoryLocation &craft_inv)
 {
 	SCRIPTAPI_PRECHECKHEADER
-
+	sanity_check(old_craft_grid);
 	int error_handler = PUSH_ERROR_HANDLER(L);
 
 	lua_getglobal(L, "core");
@@ -255,10 +254,10 @@ bool ScriptApiItem::getItemCallback(const char *name, const char *callbackname,
 	return false;
 }
 
-void ScriptApiItem::pushPointedThing(const PointedThing& pointed)
+void ScriptApiItem::pushPointedThing(const PointedThing &pointed, bool hitpoint)
 {
 	lua_State* L = getStack();
 
-	push_pointed_thing(L, pointed);
+	push_pointed_thing(L, pointed, false, hitpoint);
 }
 

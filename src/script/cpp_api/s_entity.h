@@ -35,12 +35,17 @@ public:
 	void luaentity_Remove(u16 id);
 	std::string luaentity_GetStaticdata(u16 id);
 	void luaentity_GetProperties(u16 id,
-			ObjectProperties *prop);
+			ServerActiveObject *self, ObjectProperties *prop);
 	void luaentity_Step(u16 id, float dtime);
 	bool luaentity_Punch(u16 id,
 			ServerActiveObject *puncher, float time_from_last_punch,
 			const ToolCapabilities *toolcap, v3f dir, s16 damage);
 	bool luaentity_on_death(u16 id, ServerActiveObject *killer);
-	void luaentity_Rightclick(u16 id,
-			ServerActiveObject *clicker);
+	void luaentity_Rightclick(u16 id, ServerActiveObject *clicker);
+	void luaentity_on_attach_child(u16 id, ServerActiveObject *child);
+	void luaentity_on_detach_child(u16 id, ServerActiveObject *child);
+	void luaentity_on_detach(u16 id, ServerActiveObject *parent);
+private:
+	bool luaentity_run_simple_callback(u16 id, ServerActiveObject *sao,
+		const char *field);
 };

@@ -1,6 +1,7 @@
 /*
 Minetest
-Copyright (C) 2010-2013 celeron55, Perttu Ahola <celeron55@gmail.com>
+Copyright (C) 2010-2018 celeron55, Perttu Ahola <celeron55@gmail.com>
+Copyright (C) 2015-2018 paramat
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU Lesser General Public License as published by
@@ -18,6 +19,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 */
 
 #include "dungeongen.h"
+#include <cmath>
 #include "mapgen.h"
 #include "voxel.h"
 #include "noise.h"
@@ -29,14 +31,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 //#define DGEN_USE_TORCHES
 
-NoiseParams nparams_dungeon_density(0.9, 0.5, v3f(500.0, 500.0, 500.0), 0, 2, 0.8, 2.0);
-NoiseParams nparams_dungeon_alt_wall(-0.4, 1.0, v3f(40.0, 40.0, 40.0), 32474, 6, 1.1, 2.0);
-
 
 ///////////////////////////////////////////////////////////////////////////////
 
 
-DungeonGen::DungeonGen(INodeDefManager *ndef,
+DungeonGen::DungeonGen(const NodeDefManager *ndef,
 	GenerateNotifier *gennotify, DungeonParams *dparams)
 {
 	assert(ndef);
@@ -49,19 +48,14 @@ DungeonGen::DungeonGen(INodeDefManager *ndef,
 #endif
 
 	if (dparams) {
-		memcpy(&dp, dparams, sizeof(dp));
+		dp = *dparams;
 	} else {
 		// Default dungeon parameters
 		dp.seed = 0;
 
-		dp.c_water       = ndef->getId("mapgen_water_source");
-		dp.c_river_water = ndef->getId("mapgen_river_water_source");
-		dp.c_wall        = ndef->getId("mapgen_cobble");
-		dp.c_alt_wall    = ndef->getId("mapgen_mossycobble");
-		dp.c_stair       = ndef->getId("mapgen_stair_cobble");
-
-		if (dp.c_river_water == CONTENT_IGNORE)
-			dp.c_river_water = ndef->getId("mapgen_water_source");
+		dp.c_wall     = ndef->getId("mapgen_cobble");
+		dp.c_alt_wall = ndef->getId("mapgen_mossycobble");
+		dp.c_stair    = ndef->getId("mapgen_stair_cobble");
 
 		dp.diagonal_dirs       = false;
 		dp.only_in_ground      = true;
@@ -72,31 +66,25 @@ DungeonGen::DungeonGen(INodeDefManager *ndef,
 		dp.room_size_max       = v3s16(8, 6, 8);
 		dp.room_size_large_min = v3s16(8, 8, 8);
 		dp.room_size_large_max = v3s16(16, 16, 16);
-		dp.rooms_min           = 2;
-		dp.rooms_max           = 16;
-		dp.y_min               = -MAX_MAP_GENERATION_LIMIT;
-		dp.y_max               = MAX_MAP_GENERATION_LIMIT;
+		dp.large_room_chance   = 1;
+		dp.num_rooms           = 8;
+		dp.num_dungeons        = 1;
 		dp.notifytype          = GENNOTIFY_DUNGEON;
 
-		dp.np_density  = nparams_dungeon_density;
-		dp.np_alt_wall = nparams_dungeon_alt_wall;
+		dp.np_alt_wall = 
+			NoiseParams(-0.4, 1.0, v3f(40.0, 40.0, 40.0), 32474, 6, 1.1, 2.0);
 	}
 }
 
 
 void DungeonGen::generate(MMVManip *vm, u32 bseed, v3s16 nmin, v3s16 nmax)
 {
+	if (dp.num_dungeons == 0)
+		return;
+
 	assert(vm);
 
 	//TimeTaker t("gen dungeons");
-	if (nmin.Y < dp.y_min || nmax.Y > dp.y_max)
-		return;
-
-	float nval_density = NoisePerlin3D(&dp.np_density, nmin.X, nmin.Y, nmin.Z, dp.seed);
-	if (nval_density < 1.0f)
-		return;
-
-	static const bool preserve_ignore = !g_settings->getBool("projecting_dungeons");
 
 	this->vm = vm;
 	this->blockseed = bseed;
@@ -106,17 +94,21 @@ void DungeonGen::generate(MMVManip *vm, u32 bseed, v3s16 nmin, v3s16 nmax)
 	vm->clearFlag(VMANIP_FLAG_DUNGEON_INSIDE | VMANIP_FLAG_DUNGEON_PRESERVE);
 
 	if (dp.only_in_ground) {
-		// Set all air and water to be untouchable to make dungeons open to
-		// caves and open air. Optionally set ignore to be untouchable to
-		// prevent protruding dungeons.
+		// Set all air and liquid drawtypes to be untouchable to make dungeons generate
+		// in ground only.
+		// Set 'ignore' to be untouchable to prevent generation in ungenerated neighbor
+		// mapchunks, to avoid dungeon rooms generating outside ground.
+		// Like randomwalk caves, preserve nodes that have 'is_ground_content = false',
+		// to avoid dungeons that generate out beyond the edge of a mapchunk destroying
+		// nodes added by mods in 'register_on_generated()'.
 		for (s16 z = nmin.Z; z <= nmax.Z; z++) {
 			for (s16 y = nmin.Y; y <= nmax.Y; y++) {
 				u32 i = vm->m_area.index(nmin.X, y, z);
 				for (s16 x = nmin.X; x <= nmax.X; x++) {
 					content_t c = vm->m_data[i].getContent();
-					if (c == CONTENT_AIR || c == dp.c_water ||
-							(preserve_ignore && c == CONTENT_IGNORE) ||
-							c == dp.c_river_water)
+					NodeDrawType dtype = ndef->get(c).drawtype;
+					if (dtype == NDT_AIRLIKE || dtype == NDT_LIQUID ||
+							c == CONTENT_IGNORE || !ndef->get(c).is_ground_content)
 						vm->m_flags[i] |= VMANIP_FLAG_DUNGEON_PRESERVE;
 					i++;
 				}
@@ -125,7 +117,7 @@ void DungeonGen::generate(MMVManip *vm, u32 bseed, v3s16 nmin, v3s16 nmax)
 	}
 
 	// Add them
-	for (u32 i = 0; i < floor(nval_density); i++)
+	for (u32 i = 0; i < dp.num_dungeons; i++)
 		makeDungeon(v3s16(1, 1, 1) * MAP_BLOCKSIZE);
 
 	// Optionally convert some structure to alternative structure
@@ -156,19 +148,13 @@ void DungeonGen::makeDungeon(v3s16 start_padding)
 
 	/*
 		Find place for first room.
-		There is a 1 in 4 chance of the first room being 'large',
-		all other rooms are not 'large'.
 	*/
 	bool fits = false;
 	for (u32 i = 0; i < 100 && !fits; i++) {
-		bool is_large_room = ((random.next() & 3) == 1);
-		if (is_large_room) {
-			roomsize.Z = random.range(
-				dp.room_size_large_min.Z, dp.room_size_large_max.Z);
-			roomsize.Y = random.range(
-				dp.room_size_large_min.Y, dp.room_size_large_max.Y);
-			roomsize.X = random.range(
-				dp.room_size_large_min.X, dp.room_size_large_max.X);
+		if (dp.large_room_chance >= 1) {
+			roomsize.Z = random.range(dp.room_size_large_min.Z, dp.room_size_large_max.Z);
+			roomsize.Y = random.range(dp.room_size_large_min.Y, dp.room_size_large_max.Y);
+			roomsize.X = random.range(dp.room_size_large_min.X, dp.room_size_large_max.X);
 		} else {
 			roomsize.Z = random.range(dp.room_size_min.Z, dp.room_size_max.Z);
 			roomsize.Y = random.range(dp.room_size_min.Y, dp.room_size_max.Y);
@@ -210,8 +196,7 @@ void DungeonGen::makeDungeon(v3s16 start_padding)
 	*/
 	v3s16 last_room_center = roomplace + v3s16(roomsize.X / 2, 1, roomsize.Z / 2);
 
-	u32 room_count = random.range(dp.rooms_min, dp.rooms_max);
-	for (u32 i = 0; i < room_count; i++) {
+	for (u32 i = 0; i < dp.num_rooms; i++) {
 		// Make a room to the determined place
 		makeRoom(roomsize, roomplace);
 
@@ -225,7 +210,7 @@ void DungeonGen::makeDungeon(v3s16 start_padding)
 #endif
 
 		// Quit if last room
-		if (i == room_count - 1)
+		if (i + 1 == dp.num_rooms)
 			break;
 
 		// Determine walker start position
@@ -263,9 +248,16 @@ void DungeonGen::makeDungeon(v3s16 start_padding)
 		makeCorridor(doorplace, doordir, corridor_end, corridor_end_dir);
 
 		// Find a place for a random sized room
-		roomsize.Z = random.range(dp.room_size_min.Z, dp.room_size_max.Z);
-		roomsize.Y = random.range(dp.room_size_min.Y, dp.room_size_max.Y);
-		roomsize.X = random.range(dp.room_size_min.X, dp.room_size_max.X);
+		if (dp.large_room_chance > 1 && random.range(1, dp.large_room_chance) == 1) {
+			// Large room
+			roomsize.Z = random.range(dp.room_size_large_min.Z, dp.room_size_large_max.Z);
+			roomsize.Y = random.range(dp.room_size_large_min.Y, dp.room_size_large_max.Y);
+			roomsize.X = random.range(dp.room_size_large_min.X, dp.room_size_large_max.X);
+		} else {
+			roomsize.Z = random.range(dp.room_size_min.Z, dp.room_size_max.Z);
+			roomsize.Y = random.range(dp.room_size_min.Y, dp.room_size_max.Y);
+			roomsize.X = random.range(dp.room_size_min.X, dp.room_size_max.X);
+		}
 
 		m_pos = corridor_end;
 		m_dir = corridor_end_dir;
@@ -278,7 +270,6 @@ void DungeonGen::makeDungeon(v3s16 start_padding)
 		else
 			// Don't actually make a door
 			roomplace -= doordir;
-
 	}
 }
 
@@ -434,8 +425,10 @@ void DungeonGen::makeCorridor(v3s16 doorplace, v3s16 doordir,
 					VMANIP_FLAG_DUNGEON_UNTOUCHABLE,
 					MapNode(dp.c_wall),
 					0);
-				makeHole(p);
-				makeHole(p - dir);
+				makeFill(p, dp.holesize, VMANIP_FLAG_DUNGEON_UNTOUCHABLE,
+					MapNode(CONTENT_AIR), VMANIP_FLAG_DUNGEON_INSIDE);
+				makeFill(p - dir, dp.holesize, VMANIP_FLAG_DUNGEON_UNTOUCHABLE,
+					MapNode(CONTENT_AIR), VMANIP_FLAG_DUNGEON_INSIDE);
 
 				// TODO: fix stairs code so it works 100%
 				// (quite difficult)
@@ -454,16 +447,21 @@ void DungeonGen::makeCorridor(v3s16 doorplace, v3s16 doordir,
 					v3s16 swv = (dir.Z != 0) ? v3s16(1, 0, 0) : v3s16(0, 0, 1);
 
 					for (u16 st = 0; st < stair_width; st++) {
-						u32 vi = vm->m_area.index(ps.X - dir.X, ps.Y - 1, ps.Z - dir.Z);
-						if (vm->m_area.contains(ps + v3s16(-dir.X, -1, -dir.Z)) &&
-								vm->m_data[vi].getContent() == dp.c_wall)
-							vm->m_data[vi] = MapNode(dp.c_stair, 0, facedir);
-
-						vi = vm->m_area.index(ps.X, ps.Y, ps.Z);
-						if (vm->m_area.contains(ps) &&
-								vm->m_data[vi].getContent() == dp.c_wall)
-							vm->m_data[vi] = MapNode(dp.c_stair, 0, facedir);
-
+						if (make_stairs == -1) {
+							u32 vi = vm->m_area.index(ps.X - dir.X, ps.Y - 1, ps.Z - dir.Z);
+							if (vm->m_area.contains(ps + v3s16(-dir.X, -1, -dir.Z)) &&
+									vm->m_data[vi].getContent() == dp.c_wall) {
+								vm->m_flags[vi] |= VMANIP_FLAG_DUNGEON_UNTOUCHABLE;
+								vm->m_data[vi] = MapNode(dp.c_stair, 0, facedir);
+							}
+						} else if (make_stairs == 1) {
+							u32 vi = vm->m_area.index(ps.X, ps.Y - 1, ps.Z);
+							if (vm->m_area.contains(ps + v3s16(0, -1, 0)) &&
+									vm->m_data[vi].getContent() == dp.c_wall) {
+								vm->m_flags[vi] |= VMANIP_FLAG_DUNGEON_UNTOUCHABLE;
+								vm->m_data[vi] = MapNode(dp.c_stair, 0, facedir);
+							}
+						}
 						ps += swv;
 					}
 				}
@@ -490,7 +488,7 @@ void DungeonGen::makeCorridor(v3s16 doorplace, v3s16 doordir,
 		if (partcount >= partlength) {
 			partcount = 0;
 
-			dir = random_turn(random, dir);
+			random_turn(random, dir);
 
 			partlength = random.range(1, length);
 
@@ -651,20 +649,19 @@ v3s16 turn_xz(v3s16 olddir, int t)
 }
 
 
-v3s16 random_turn(PseudoRandom &random, v3s16 olddir)
+void random_turn(PseudoRandom &random, v3s16 &dir)
 {
 	int turn = random.range(0, 2);
-	v3s16 dir;
-	if (turn == 0)
-		// Go straight
-		dir = olddir;
-	else if (turn == 1)
+	if (turn == 0) {
+		// Go straight: nothing to do
+		return;
+	} else if (turn == 1) {
 		// Turn right
-		dir = turn_xz(olddir, 0);
-	else
+		dir = turn_xz(dir, 0);
+	} else {
 		// Turn left
-		dir = turn_xz(olddir, 1);
-	return dir;
+		dir = turn_xz(dir, 1);
+	}
 }
 
 

@@ -53,23 +53,20 @@ void ModApiHttp::read_http_fetch_request(lua_State *L, HTTPFetchRequest &req)
 	lua_getfield(L, 1, "post_data");
 	if (lua_istable(L, 2)) {
 		lua_pushnil(L);
-		while (lua_next(L, 2) != 0)
-		{
-			req.post_fields[luaL_checkstring(L, -2)] = luaL_checkstring(L, -1);
+		while (lua_next(L, 2) != 0) {
+			req.post_fields[readParam<std::string>(L, -2)] = readParam<std::string>(L, -1);
 			lua_pop(L, 1);
 		}
 	} else if (lua_isstring(L, 2)) {
-		req.post_data = lua_tostring(L, 2);
+		req.post_data = readParam<std::string>(L, 2);
 	}
 	lua_pop(L, 1);
 
 	lua_getfield(L, 1, "extra_headers");
 	if (lua_istable(L, 2)) {
 		lua_pushnil(L);
-		while (lua_next(L, 2) != 0)
-		{
-			const char *header = luaL_checkstring(L, -1);
-			req.extra_headers.emplace_back(header);
+		while (lua_next(L, 2) != 0) {
+			req.extra_headers.emplace_back(readParam<std::string>(L, -1));
 			lua_pop(L, 1);
 		}
 	}
@@ -83,7 +80,7 @@ void ModApiHttp::push_http_fetch_result(lua_State *L, HTTPFetchResult &res, bool
 	setboolfield(L, -1, "timeout", res.timeout);
 	setboolfield(L, -1, "completed", completed);
 	setintfield(L, -1, "code", res.response_code);
-	setstringfield(L, -1, "data", res.data.c_str());
+	setstringfield(L, -1, "data", res.data);
 }
 
 // http_api.fetch_async(HTTPRequest definition)
@@ -94,7 +91,7 @@ int ModApiHttp::l_http_fetch_async(lua_State *L)
 	HTTPFetchRequest req;
 	read_http_fetch_request(L, req);
 
-	actionstream << "Mod performs HTTP request with URL " << req.url << std::endl;
+	infostream << "Mod performs HTTP request with URL " << req.url << std::endl;
 	httpfetch_async(req);
 
 	// Convert handle to hex string since lua can't handle 64-bit integers
@@ -154,7 +151,7 @@ int ModApiHttp::l_request_http_api(lua_State *L)
 		return 0;
 	}
 
-	const char *mod_name = lua_tostring(L, -1);
+	std::string mod_name = readParam<std::string>(L, -1);
 	std::string http_mods = g_settings->get("secure.http_mods");
 	http_mods.erase(std::remove(http_mods.begin(), http_mods.end(), ' '), http_mods.end());
 	std::vector<std::string> mod_list_http = str_split(http_mods, ',');

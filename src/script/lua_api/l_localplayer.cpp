@@ -20,7 +20,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "l_localplayer.h"
 #include "l_internal.h"
 #include "script/common/c_converter.h"
-#include "localplayer.h"
+#include "client/localplayer.h"
+#include "hud.h"
+#include "common/c_content.h"
 
 LuaLocalPlayer::LuaLocalPlayer(LocalPlayer *m) : m_localplayer(m)
 {
@@ -28,20 +30,24 @@ LuaLocalPlayer::LuaLocalPlayer(LocalPlayer *m) : m_localplayer(m)
 
 void LuaLocalPlayer::create(lua_State *L, LocalPlayer *m)
 {
+	lua_getglobal(L, "core");
+	luaL_checktype(L, -1, LUA_TTABLE);
+	int objectstable = lua_gettop(L);
+	lua_getfield(L, -1, "localplayer");
+
+	// Duplication check
+	if (lua_type(L, -1) == LUA_TUSERDATA) {
+		lua_pop(L, 1);
+		return;
+	}
+
 	LuaLocalPlayer *o = new LuaLocalPlayer(m);
 	*(void **)(lua_newuserdata(L, sizeof(void *))) = o;
 	luaL_getmetatable(L, className);
 	lua_setmetatable(L, -2);
 
-	// Keep localplayer object stack id
-	int localplayer_object = lua_gettop(L);
-
-	lua_getglobal(L, "core");
-	luaL_checktype(L, -1, LUA_TTABLE);
-	int coretable = lua_gettop(L);
-
-	lua_pushvalue(L, localplayer_object);
-	lua_setfield(L, coretable, "localplayer");
+	lua_pushvalue(L, lua_gettop(L));
+	lua_setfield(L, objectstable, "localplayer");
 }
 
 int LuaLocalPlayer::l_get_velocity(lua_State *L)
@@ -72,7 +78,7 @@ int LuaLocalPlayer::l_is_attached(lua_State *L)
 {
 	LocalPlayer *player = getobject(L, 1);
 
-	lua_pushboolean(L, player->isAttached);
+	lua_pushboolean(L, player->getParent() != nullptr);
 	return 1;
 }
 
@@ -151,7 +157,7 @@ int LuaLocalPlayer::l_get_override_pos(lua_State *L)
 {
 	LocalPlayer *player = getobject(L, 1);
 
-	push_v3f(L, player->overridePosition);
+	push_v3f(L, player->getPosition());
 	return 1;
 }
 
@@ -272,6 +278,73 @@ int LuaLocalPlayer::l_get_movement(lua_State *L)
 	return 1;
 }
 
+
+// hud_add(self, form)
+int LuaLocalPlayer::l_hud_add(lua_State *L)
+{
+	LocalPlayer *player = getobject(L, 1);
+
+	HudElement *elem = new HudElement;
+	read_hud_element(L, elem);
+
+	u32 id = player->addHud(elem);
+	if (id == U32_MAX) {
+		delete elem;
+		return 0;
+	}
+	lua_pushnumber(L, id);
+	return 1;
+}
+
+// hud_remove(self, id)
+int LuaLocalPlayer::l_hud_remove(lua_State *L)
+{
+	LocalPlayer *player = getobject(L, 1);
+	u32 id = luaL_checkinteger(L, 2);
+	HudElement *element = player->removeHud(id);
+	if (!element)
+		lua_pushboolean(L, false);
+	else
+		lua_pushboolean(L, true);
+	delete element;
+	return 1;
+}
+
+// hud_change(self, id, stat, data)
+int LuaLocalPlayer::l_hud_change(lua_State *L)
+{
+	LocalPlayer *player = getobject(L, 1);
+
+	u32 id = luaL_checkinteger(L, 2);
+
+	HudElement *element = player->getHud(id);
+	if (!element)
+		return 0;
+
+	void *unused;
+	read_hud_change(L, element, &unused);
+
+	lua_pushboolean(L, true);
+	return 1;
+}
+
+// hud_get(self, id)
+int LuaLocalPlayer::l_hud_get(lua_State *L)
+{
+	LocalPlayer *player = getobject(L, 1);
+
+	u32 id = luaL_checkinteger(L, -1);
+
+	HudElement *e = player->getHud(id);
+	if (!e) {
+		lua_pushnil(L);
+		return 1;
+	}
+
+	push_hud_element(L, e);
+	return 1;
+}
+
 LuaLocalPlayer *LuaLocalPlayer::checkobject(lua_State *L, int narg)
 {
 	luaL_checktype(L, narg, LUA_TUSERDATA);
@@ -353,6 +426,10 @@ const luaL_Reg LuaLocalPlayer::methods[] = {
 		luamethod(LuaLocalPlayer, get_movement_acceleration),
 		luamethod(LuaLocalPlayer, get_movement_speed),
 		luamethod(LuaLocalPlayer, get_movement),
+		luamethod(LuaLocalPlayer, hud_add),
+		luamethod(LuaLocalPlayer, hud_remove),
+		luamethod(LuaLocalPlayer, hud_change),
+		luamethod(LuaLocalPlayer, hud_get),
 
 		{0, 0}
 };

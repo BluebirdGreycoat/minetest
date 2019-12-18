@@ -97,7 +97,7 @@ struct InventoryLocation
 	std::string dump() const;
 	void serialize(std::ostream &os) const;
 	void deSerialize(std::istream &is);
-	void deSerialize(std::string s);
+	void deSerialize(const std::string &s);
 };
 
 struct InventoryAction;
@@ -111,7 +111,7 @@ public:
 	// Get an inventory (server and client)
 	virtual Inventory* getInventory(const InventoryLocation &loc){return NULL;}
     // Set modified (will be saved and sent over network; only on server)
-	virtual void setInventoryModified(const InventoryLocation &loc, bool playerSend = true){}
+	virtual void setInventoryModified(const InventoryLocation &loc) {}
     // Send inventory action to server (only on client)
 	virtual void inventoryAction(InventoryAction *a){}
 };
@@ -134,16 +134,20 @@ struct InventoryAction
 	virtual ~InventoryAction() = default;;
 };
 
-struct IMoveAction : public InventoryAction
+struct MoveAction
 {
-	// count=0 means "everything"
-	u16 count = 0;
 	InventoryLocation from_inv;
 	std::string from_list;
 	s16 from_i = -1;
 	InventoryLocation to_inv;
 	std::string to_list;
 	s16 to_i = -1;
+};
+
+struct IMoveAction : public InventoryAction, public MoveAction
+{
+	// count=0 means "everything"
+	u16 count = 0;
 	bool move_somewhere = false;
 
 	// treat these as private
@@ -181,13 +185,10 @@ struct IMoveAction : public InventoryAction
 	void clientApply(InventoryManager *mgr, IGameDef *gamedef);
 };
 
-struct IDropAction : public InventoryAction
+struct IDropAction : public InventoryAction, public MoveAction
 {
 	// count=0 means "everything"
 	u16 count = 0;
-	InventoryLocation from_inv;
-	std::string from_list;
-	s16 from_i = -1;
 
 	IDropAction() = default;
 

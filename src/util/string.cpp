@@ -43,7 +43,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 	#define BSD_ICONV_USED
 #endif
 
-static bool parseHexColorString(const std::string &value, video::SColor &color);
+static bool parseHexColorString(const std::string &value, video::SColor &color,
+		unsigned char default_alpha = 0xff);
 static bool parseNamedColorString(const std::string &value, video::SColor &color);
 
 #ifndef _WIN32
@@ -166,6 +167,8 @@ std::string wide_to_utf8(const std::wstring &input)
 
 #endif // _WIN32
 
+// You must free the returned string!
+// The returned string is allocated using new
 wchar_t *utf8_to_wide_c(const char *str)
 {
 	std::wstring ret = utf8_to_wide(std::string(str));
@@ -464,12 +467,13 @@ u64 read_seed(const char *str)
 	return num;
 }
 
-bool parseColorString(const std::string &value, video::SColor &color, bool quiet)
+bool parseColorString(const std::string &value, video::SColor &color, bool quiet,
+		unsigned char default_alpha)
 {
 	bool success;
 
 	if (value[0] == '#')
-		success = parseHexColorString(value, color);
+		success = parseHexColorString(value, color, default_alpha);
 	else
 		success = parseNamedColorString(value, color);
 
@@ -479,9 +483,10 @@ bool parseColorString(const std::string &value, video::SColor &color, bool quiet
 	return success;
 }
 
-static bool parseHexColorString(const std::string &value, video::SColor &color)
+static bool parseHexColorString(const std::string &value, video::SColor &color,
+		unsigned char default_alpha)
 {
-	unsigned char components[] = { 0x00, 0x00, 0x00, 0xff }; // R,G,B,A
+	unsigned char components[] = { 0x00, 0x00, 0x00, default_alpha }; // R,G,B,A
 
 	if (value[0] != '#')
 		return false;
@@ -941,4 +946,29 @@ std::wstring translate_string(const std::wstring &s) {
 	std::wstring res;
 	translate_all(s, i, res);
 	return res;
+}
+
+/**
+ * Create a std::string from a irr::core:stringw.
+ */
+std::string strwtostr(const irr::core::stringw &str)
+{
+	std::string text = core::stringc(str.c_str()).c_str();
+	return text;
+}
+
+/**
+ * Create a irr::core:stringw from a std::string.
+ */
+irr::core::stringw strtostrw(const std::string &str)
+{
+	size_t size = str.size();
+	// s.size() doesn't include NULL terminator
+	wchar_t *text = new wchar_t[size + sizeof(wchar_t)];
+	const char *data = &str[0];
+
+	mbsrtowcs(text, &data, size, NULL);
+
+	text[size] = L'\0';
+	return text;
 }

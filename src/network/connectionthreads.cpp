@@ -206,9 +206,6 @@ void ConnectionSendThread::runTimeouts(float dtime)
 		for (Channel &channel : udpPeer->channels) {
 			std::list<BufferedPacket> timed_outs;
 
-			if (udpPeer->getLegacyPeer())
-				channel.setWindowSize(WINDOW_SIZE);
-
 			// Remove timed out incomplete unreliable split packets
 			channel.incoming_splits.removeUnreliableTimedOuts(dtime, m_timeout);
 
@@ -264,7 +261,7 @@ void ConnectionSendThread::runTimeouts(float dtime)
 				break; /* no need to check other channels if we already did timeout */
 			}
 
-			channel.UpdateTimers(dtime, udpPeer->getLegacyPeer());
+			channel.UpdateTimers(dtime);
 		}
 
 		/* skip to next peer if we did timeout */
@@ -330,7 +327,7 @@ void ConnectionSendThread::sendAsPacketReliable(BufferedPacket &p, Channel *chan
 }
 
 bool ConnectionSendThread::rawSendAsPacket(session_t peer_id, u8 channelnum,
-	SharedBuffer<u8> data, bool reliable)
+	const SharedBuffer<u8> &data, bool reliable)
 {
 	PeerHelper peer = m_connection->getPeerNoEx(peer_id);
 	if (!peer) {
@@ -365,7 +362,7 @@ bool ConnectionSendThread::rawSendAsPacket(session_t peer_id, u8 channelnum,
 			< channel->getWindowSize()) {
 			LOG(dout_con << m_connection->getDesc()
 				<< " INFO: sending a reliable packet to peer_id " << peer_id
-				<< " channel: " << channelnum
+				<< " channel: " << (u32)channelnum
 				<< " seqnum: " << seqnum << std::endl);
 			sendAsPacketReliable(p, channel);
 			return true;
@@ -373,7 +370,7 @@ bool ConnectionSendThread::rawSendAsPacket(session_t peer_id, u8 channelnum,
 
 		LOG(dout_con << m_connection->getDesc()
 			<< " INFO: queueing reliable packet for peer_id: " << peer_id
-			<< " channel: " << channelnum
+			<< " channel: " << (u32)channelnum
 			<< " seqnum: " << seqnum << std::endl);
 		channel->queued_reliables.push(p);
 		return false;
@@ -422,15 +419,6 @@ void ConnectionSendThread::processReliableCommand(ConnectionCommand &c)
 		case CONCMD_CREATE_PEER:
 			LOG(dout_con << m_connection->getDesc()
 				<< "UDP processing reliable CONCMD_CREATE_PEER" << std::endl);
-			if (!rawSendAsPacket(c.peer_id, c.channelnum, c.data, c.reliable)) {
-				/* put to queue if we couldn't send it immediately */
-				sendReliable(c);
-			}
-			return;
-
-		case CONCMD_DISABLE_LEGACY:
-			LOG(dout_con << m_connection->getDesc()
-				<< "UDP processing reliable CONCMD_DISABLE_LEGACY" << std::endl);
 			if (!rawSendAsPacket(c.peer_id, c.channelnum, c.data, c.reliable)) {
 				/* put to queue if we couldn't send it immediately */
 				sendReliable(c);
@@ -587,7 +575,7 @@ void ConnectionSendThread::disconnect_peer(session_t peer_id)
 }
 
 void ConnectionSendThread::send(session_t peer_id, u8 channelnum,
-	SharedBuffer<u8> data)
+	const SharedBuffer<u8> &data)
 {
 	assert(channelnum < CHANNEL_COUNT); // Pre-condition
 
@@ -627,7 +615,7 @@ void ConnectionSendThread::sendReliable(ConnectionCommand &c)
 	peer->PutReliableSendCommand(c, m_max_packet_size);
 }
 
-void ConnectionSendThread::sendToAll(u8 channelnum, SharedBuffer<u8> data)
+void ConnectionSendThread::sendToAll(u8 channelnum, const SharedBuffer<u8> &data)
 {
 	std::list<session_t> peerids = m_connection->getPeerIDs();
 
@@ -788,7 +776,7 @@ void ConnectionSendThread::sendPackets(float dtime)
 }
 
 void ConnectionSendThread::sendAsPacket(session_t peer_id, u8 channelnum,
-	SharedBuffer<u8> data, bool ack)
+	const SharedBuffer<u8> &data, bool ack)
 {
 	OutgoingPacket packet(peer_id, channelnum, data, false, ack);
 	m_outgoing_queue.push(packet);
@@ -948,7 +936,7 @@ void ConnectionReceiveThread::receive()
 
 			if (channelnum > CHANNEL_COUNT - 1) {
 				LOG(derr_con << m_connection->getDesc()
-					<< "Receive(): Invalid channel " << channelnum << std::endl);
+					<< "Receive(): Invalid channel " << (u32)channelnum << std::endl);
 				throw InvalidIncomingDataException("Channel doesn't exist");
 			}
 
@@ -1024,7 +1012,7 @@ void ConnectionReceiveThread::receive()
 
 				LOG(dout_con << m_connection->getDesc()
 					<< " ProcessPacket from peer_id: " << peer_id
-					<< ",channel: " << (channelnum & 0xFF) << ", returned "
+					<< ", channel: " << (u32)channelnum << ", returned "
 					<< resultdata.getSize() << " bytes" << std::endl);
 
 				ConnectionEvent e;
@@ -1098,7 +1086,7 @@ bool ConnectionReceiveThread::checkIncomingBuffers(Channel *channel,
 }
 
 SharedBuffer<u8> ConnectionReceiveThread::processPacket(Channel *channel,
-	SharedBuffer<u8> packetdata, session_t peer_id, u8 channelnum, bool reliable)
+	const SharedBuffer<u8> &packetdata, session_t peer_id, u8 channelnum, bool reliable)
 {
 	PeerHelper peer = m_connection->getPeerNoEx(peer_id);
 
@@ -1137,7 +1125,7 @@ const ConnectionReceiveThread::PacketTypeHandler
 };
 
 SharedBuffer<u8> ConnectionReceiveThread::handlePacketType_Control(Channel *channel,
-	SharedBuffer<u8> packetdata, Peer *peer, u8 channelnum, bool reliable)
+	const SharedBuffer<u8> &packetdata, Peer *peer, u8 channelnum, bool reliable)
 {
 	if (packetdata.getSize() < 2)
 		throw InvalidIncomingDataException("packetdata.getSize() < 2");
@@ -1210,14 +1198,6 @@ SharedBuffer<u8> ConnectionReceiveThread::handlePacketType_Control(Channel *chan
 			m_connection->SetPeerID(peer_id_new);
 		}
 
-		ConnectionCommand cmd;
-
-		SharedBuffer<u8> reply(2);
-		writeU8(&reply[0], PACKET_TYPE_CONTROL);
-		writeU8(&reply[1], CONTROLTYPE_ENABLE_BIG_SEND_WINDOW);
-		cmd.disableLegacy(PEER_ID_SERVER, reply);
-		m_connection->putCommand(cmd);
-
 		throw ProcessedSilentlyException("Got a SET_PEER_ID");
 	} else if (controltype == CONTROLTYPE_PING) {
 		// Just ignore it, the incoming data already reset
@@ -1235,9 +1215,6 @@ SharedBuffer<u8> ConnectionReceiveThread::handlePacketType_Control(Channel *chan
 		}
 
 		throw ProcessedSilentlyException("Got a DISCO");
-	} else if (controltype == CONTROLTYPE_ENABLE_BIG_SEND_WINDOW) {
-		dynamic_cast<UDPPeer *>(peer)->setNonLegacyPeer();
-		throw ProcessedSilentlyException("Got non legacy control");
 	} else {
 		LOG(derr_con << m_connection->getDesc()
 			<< "INVALID TYPE_CONTROL: invalid controltype="
@@ -1247,7 +1224,7 @@ SharedBuffer<u8> ConnectionReceiveThread::handlePacketType_Control(Channel *chan
 }
 
 SharedBuffer<u8> ConnectionReceiveThread::handlePacketType_Original(Channel *channel,
-	SharedBuffer<u8> packetdata, Peer *peer, u8 channelnum, bool reliable)
+	const SharedBuffer<u8> &packetdata, Peer *peer, u8 channelnum, bool reliable)
 {
 	if (packetdata.getSize() <= ORIGINAL_HEADER_SIZE)
 		throw InvalidIncomingDataException
@@ -1261,7 +1238,7 @@ SharedBuffer<u8> ConnectionReceiveThread::handlePacketType_Original(Channel *cha
 }
 
 SharedBuffer<u8> ConnectionReceiveThread::handlePacketType_Split(Channel *channel,
-	SharedBuffer<u8> packetdata, Peer *peer, u8 channelnum, bool reliable)
+	const SharedBuffer<u8> &packetdata, Peer *peer, u8 channelnum, bool reliable)
 {
 	Address peer_address;
 
@@ -1292,7 +1269,7 @@ SharedBuffer<u8> ConnectionReceiveThread::handlePacketType_Split(Channel *channe
 }
 
 SharedBuffer<u8> ConnectionReceiveThread::handlePacketType_Reliable(Channel *channel,
-	SharedBuffer<u8> packetdata, Peer *peer, u8 channelnum, bool reliable)
+	const SharedBuffer<u8> &packetdata, Peer *peer, u8 channelnum, bool reliable)
 {
 	assert(channel != NULL);
 

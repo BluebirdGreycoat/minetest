@@ -7,10 +7,10 @@
 #include "IrrCompileConfig.h"
 //#ifdef _IRR_COMPILE_WITH_GUI_
 
-#include "IGUIEditBox.h"
+#include <IGUIEditBox.h>
 #include "irrArray.h"
 #include "IOSOperator.h"
-#include "IGUIScrollBar.h"
+#include "guiScrollBar.h"
 
 namespace irr
 {
@@ -57,8 +57,12 @@ namespace gui
 		//! Sets whether to draw the background
 		virtual void setDrawBackground(bool draw);
 
+		virtual bool isDrawBackgroundEnabled() const { return true; }
+
 		//! Turns the border on or off
 		virtual void setDrawBorder(bool border);
+
+		virtual bool isDrawBorderEnabled() const { return Border; }
 
 		//! Enables or disables word wrap for using the edit box as multiline text editor.
 		virtual void setWordWrap(bool enable);
@@ -129,6 +133,14 @@ namespace gui
 		//! Reads attributes of the element
 		virtual void deserializeAttributes(io::IAttributes* in, io::SAttributeReadWriteOptions* options);
 
+		virtual void setCursorChar(const wchar_t cursorChar) {}
+
+		virtual wchar_t getCursorChar() const { return L'|'; }
+
+		virtual void setCursorBlinkTime(u32 timeMs) {}
+
+		virtual u32 getCursorBlinkTime() const { return 500; }
+
 	protected:
 		//! Breaks the single text line.
 		void breakText();
@@ -186,7 +198,7 @@ namespace gui
 		core::rect<s32> CurrentTextRect = core::rect<s32>(0,0,1,1);
 		core::rect<s32> FrameRect; // temporary values
 		u32 m_scrollbar_width;
-		IGUIScrollBar *m_vscrollbar;
+		GUIScrollBar *m_vscrollbar;
 		bool m_writable;
 
 	};

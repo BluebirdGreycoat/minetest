@@ -1,7 +1,7 @@
 /*
 Minetest
 Copyright (C) 2010-2013 celeron55, Perttu Ahola <celeron55@gmail.com>
-Copyright (C) 2017 numzero, Lobachesky Vitaly <numzer0@yandex.ru>
+Copyright (C) 2017 numzero, Lobachevskiy Vitaliy <numzer0@yandex.ru>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU Lesser General Public License as published by
@@ -35,7 +35,7 @@ RenderingCorePlain::RenderingCorePlain(
 
 void RenderingCorePlain::initTextures()
 {
-	if (!scale)
+	if (scale <= 1)
 		return;
 	v2u32 size{scaledown(scale, screensize.X), scaledown(scale, screensize.Y)};
 	lowres = driver->addRenderTargetTexture(
@@ -44,21 +44,21 @@ void RenderingCorePlain::initTextures()
 
 void RenderingCorePlain::clearTextures()
 {
-	if (!scale)
+	if (scale <= 1)
 		return;
 	driver->removeTexture(lowres);
 }
 
 void RenderingCorePlain::beforeDraw()
 {
-	if (!scale)
+	if (scale <= 1)
 		return;
 	driver->setRenderTarget(lowres, true, true, skycolor);
 }
 
 void RenderingCorePlain::upscale()
 {
-	if (!scale)
+	if (scale <= 1)
 		return;
 	driver->setRenderTarget(0, true, true);
 	v2u32 size{scaledown(scale, screensize.X), scaledown(scale, screensize.Y)};

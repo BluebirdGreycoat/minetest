@@ -1,9 +1,29 @@
-#include "script/common/c_converter.h"
+/*
+Minetest
+Copyright (C) 2010-2013 celeron55, Perttu Ahola <celeron55@gmail.com>
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU Lesser General Public License as published by
+the Free Software Foundation; either version 2.1 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Lesser General Public License for more details.
+
+You should have received a copy of the GNU Lesser General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
 #include "l_camera.h"
+#include <cmath>
+#include "script/common/c_converter.h"
 #include "l_internal.h"
-#include "content_cao.h"
-#include "camera.h"
-#include "client.h"
+#include "client/content_cao.h"
+#include "client/camera.h"
+#include "client/client.h"
 
 LuaCamera::LuaCamera(Camera *m) : m_camera(m)
 {
@@ -11,19 +31,24 @@ LuaCamera::LuaCamera(Camera *m) : m_camera(m)
 
 void LuaCamera::create(lua_State *L, Camera *m)
 {
+	lua_getglobal(L, "core");
+	luaL_checktype(L, -1, LUA_TTABLE);
+	int objectstable = lua_gettop(L);
+	lua_getfield(L, -1, "camera");
+
+	// Duplication check
+	if (lua_type(L, -1) == LUA_TUSERDATA) {
+		lua_pop(L, 1);
+		return;
+	}
+
 	LuaCamera *o = new LuaCamera(m);
 	*(void **)(lua_newuserdata(L, sizeof(void *))) = o;
 	luaL_getmetatable(L, className);
 	lua_setmetatable(L, -2);
 
-	int camera_object = lua_gettop(L);
-
-	lua_getglobal(L, "core");
-	luaL_checktype(L, -1, LUA_TTABLE);
-	int coretable = lua_gettop(L);
-
-	lua_pushvalue(L, camera_object);
-	lua_setfield(L, coretable, "camera");
+	lua_pushvalue(L, lua_gettop(L));
+	lua_setfield(L, objectstable, "camera");
 }
 
 int LuaCamera::l_set_camera_mode(lua_State *L)
@@ -83,11 +108,10 @@ int LuaCamera::l_get_pos(lua_State *L)
 
 int LuaCamera::l_get_offset(lua_State *L)
 {
-	Camera *camera = getobject(L, 1);
-	if (!camera)
-		return 0;
+	LocalPlayer *player = getClient(L)->getEnv().getLocalPlayer();
+	sanity_check(player);
 
-	push_v3s16(L, camera->getOffset());
+	push_v3f(L, player->getEyeOffset() / BS);
 	return 1;
 }
 
@@ -98,7 +122,8 @@ int LuaCamera::l_get_look_dir(lua_State *L)
 
 	float pitch = -1.0 * player->getPitch() * core::DEGTORAD;
 	float yaw = (player->getYaw() + 90.) * core::DEGTORAD;
-	v3f v(cos(pitch) * cos(yaw), sin(pitch), cos(pitch) * sin(yaw));
+	v3f v(std::cos(pitch) * std::cos(yaw), std::sin(pitch),
+			std::cos(pitch) * std::sin(yaw));
 
 	push_v3f(L, v);
 	return 1;

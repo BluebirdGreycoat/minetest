@@ -1,28 +1,46 @@
-local modname = core.get_current_modname() or "??"
+local modname = assert(core.get_current_modname())
 local modstorage = core.get_mod_storage()
 local mod_channel
 
-dofile("preview:example.lua")
--- This is an example function to ensure it's working properly, should be removed before merge
+dofile(core.get_modpath(modname) .. "example.lua")
+
 core.register_on_shutdown(function()
 	print("[PREVIEW] shutdown client")
 end)
+local id = nil
 
-core.register_on_connect(function()
-	print("[PREVIEW] Player connection completed")
+do
 	local server_info = core.get_server_info()
 	print("Server version: " .. server_info.protocol_version)
 	print("Server ip: " .. server_info.ip)
 	print("Server address: " .. server_info.address)
 	print("Server port: " .. server_info.port)
 
-	mod_channel = core.mod_channel_join("experimental_preview")
+	print("CSM restrictions: " .. dump(core.get_csm_restrictions()))
 
-	core.after(4, function()
-		if mod_channel:is_writeable() then
-			mod_channel:send_all("preview talk to experimental")
-		end
-	end)
+	local l1, l2 = core.get_language()
+	print("Configured language: " .. l1 .. " / " .. l2)
+end
+
+mod_channel = core.mod_channel_join("experimental_preview")
+
+core.after(4, function()
+	if mod_channel:is_writeable() then
+		mod_channel:send_all("preview talk to experimental")
+	end
+end)
+
+core.after(1, function()
+	id = core.localplayer:hud_add({
+			hud_elem_type = "text",
+			name = "example",
+			number = 0xff0000,
+			position = {x=0, y=1},
+			offset = {x=8, y=-8},
+			text = "You are using the preview mod",
+			scale = {x=200, y=60},
+			alignment = {x=1, y=-1},
+	})
 end)
 
 core.register_on_modchannel_message(function(channel, sender, message)
@@ -55,6 +73,26 @@ core.register_on_item_use(function(itemstack, pointed_thing)
 	print("The local player used an item!")
 	print("pointed_thing :" .. dump(pointed_thing))
 	print("item = " .. itemstack:get_name())
+
+	if not itemstack:is_empty() then
+		return false
+	end
+
+	local pos = vector.add(core.localplayer:get_pos(), core.camera:get_offset())
+	local pos2 = vector.add(pos, vector.multiply(core.camera:get_look_dir(), 100))
+
+	local rc = core.raycast(pos, pos2)
+	local i = rc:next()
+	print("[PREVIEW] raycast next: " .. dump(i))
+	if i then
+		print("[PREVIEW] line of sight: " .. (core.line_of_sight(pos, i.above) and "yes" or "no"))
+
+		local n1 = core.find_nodes_in_area(pos, i.under, {"default:stone"})
+		local n2 = core.find_nodes_in_area_under_air(pos, i.under, {"default:stone"})
+		print(("[PREVIEW] found %s nodes, %s nodes under air"):format(
+				n1 and #n1 or "?", n2 and #n2 or "?"))
+	end
+
 	return false
 end)
 
@@ -78,11 +116,6 @@ end)
 -- This is an example function to ensure it's working properly, should be removed before merge
 core.register_on_damage_taken(function(hp)
 	print("[PREVIEW] Damage taken " .. hp)
-end)
-
--- This is an example function to ensure it's working properly, should be removed before merge
-core.register_globalstep(function(dtime)
-	-- print("[PREVIEW] globalstep " .. dtime)
 end)
 
 -- This is an example function to ensure it's working properly, should be removed before merge
@@ -133,8 +166,7 @@ core.after(5, function()
 		core.ui.minimap:show()
 	end
 
-	print("[PREVIEW] Day count: " .. core.get_day_count() ..
-		" time of day " .. core.get_timeofday())
+	print("[PREVIEW] Time of day " .. core.get_timeofday())
 
 	print("[PREVIEW] Node level: " .. core.get_node_level({x=0, y=20, z=0}) ..
 		" max level " .. core.get_node_max_level({x=0, y=20, z=0}))
@@ -184,3 +216,14 @@ core.register_chatcommand("privs", {
 		return true, core.privs_to_string(minetest.get_privilege_list())
 	end,
 })
+
+core.register_chatcommand("text", {
+	func = function(param)
+		return core.localplayer:hud_change(id, "text", param)
+	end,
+})
+
+
+core.register_on_mods_loaded(function()
+	core.log("Yeah preview mod is loaded with other CSM mods.")
+end)

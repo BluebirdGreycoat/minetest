@@ -1,8 +1,8 @@
 /*
 Minetest
-Copyright (C) 2010-2015 celeron55, Perttu Ahola <celeron55@gmail.com>
-Copyright (C) 2013-2016 kwolekr, Ryan Kwolek <kwolekr@minetest.net>
-Copyright (C) 2014-2017 paramat
+Copyright (C) 2010-2018 celeron55, Perttu Ahola <celeron55@gmail.com>
+Copyright (C) 2013-2018 kwolekr, Ryan Kwolek <kwolekr@minetest.net>
+Copyright (C) 2014-2018 paramat
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU Lesser General Public License as published by
@@ -20,6 +20,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 */
 
 
+#include <cmath>
 #include "mapgen.h"
 #include "voxel.h"
 #include "noise.h"
@@ -55,22 +56,26 @@ FlagDesc flagdesc_mapgen_v6[] = {
 /////////////////////////////////////////////////////////////////////////////
 
 
-MapgenV6::MapgenV6(int mapgenid, MapgenV6Params *params, EmergeManager *emerge)
-	: Mapgen(mapgenid, params, emerge)
+MapgenV6::MapgenV6(MapgenV6Params *params, EmergeManager *emerge)
+	: Mapgen(MAPGEN_V6, params, emerge)
 {
 	m_emerge = emerge;
-	ystride = csize.X; //////fix this
+	ystride = csize.X;
 
 	heightmap = new s16[csize.X * csize.Z];
 
-	spflags     = params->spflags;
-	freq_desert = params->freq_desert;
-	freq_beach  = params->freq_beach;
+	spflags      = params->spflags;
+	freq_desert  = params->freq_desert;
+	freq_beach   = params->freq_beach;
+	dungeon_ymin = params->dungeon_ymin;
+	dungeon_ymax = params->dungeon_ymax;
 
 	np_cave        = &params->np_cave;
 	np_humidity    = &params->np_humidity;
 	np_trees       = &params->np_trees;
 	np_apple_trees = &params->np_apple_trees;
+
+	np_dungeons = NoiseParams(0.9, 0.5, v3f(500.0, 500.0, 500.0), 0, 2, 0.8, 2.0);
 
 	//// Create noise objects
 	noise_terrain_base   = new Noise(&params->np_terrain_base,   seed, csize.X, csize.Y);
@@ -85,7 +90,7 @@ MapgenV6::MapgenV6(int mapgenid, MapgenV6Params *params, EmergeManager *emerge)
 			csize.X + 2 * MAP_BLOCKSIZE, csize.Y + 2 * MAP_BLOCKSIZE);
 
 	//// Resolve nodes to be used
-	INodeDefManager *ndef = emerge->ndef;
+	const NodeDefManager *ndef = emerge->ndef;
 
 	c_stone           = ndef->getId("mapgen_stone");
 	c_dirt            = ndef->getId("mapgen_dirt");
@@ -166,6 +171,8 @@ void MapgenV6Params::readParams(const Settings *settings)
 	settings->getFlagStrNoEx("mgv6_spflags", spflags, flagdesc_mapgen_v6);
 	settings->getFloatNoEx("mgv6_freq_desert", freq_desert);
 	settings->getFloatNoEx("mgv6_freq_beach",  freq_beach);
+	settings->getS16NoEx("mgv6_dungeon_ymin",  dungeon_ymin);
+	settings->getS16NoEx("mgv6_dungeon_ymax",  dungeon_ymax);
 
 	settings->getNoiseParams("mgv6_np_terrain_base",   np_terrain_base);
 	settings->getNoiseParams("mgv6_np_terrain_higher", np_terrain_higher);
@@ -186,6 +193,8 @@ void MapgenV6Params::writeParams(Settings *settings) const
 	settings->setFlagStr("mgv6_spflags", spflags, flagdesc_mapgen_v6, U32_MAX);
 	settings->setFloat("mgv6_freq_desert", freq_desert);
 	settings->setFloat("mgv6_freq_beach",  freq_beach);
+	settings->setS16("mgv6_dungeon_ymin",  dungeon_ymin);
+	settings->setS16("mgv6_dungeon_ymax",  dungeon_ymax);
 
 	settings->setNoiseParams("mgv6_np_terrain_base",   np_terrain_base);
 	settings->setNoiseParams("mgv6_np_terrain_higher", np_terrain_higher);
@@ -217,7 +226,7 @@ s16 MapgenV6::find_stone_level(v2s16 p2d)
 		if (c != CONTENT_IGNORE && (c == c_stone || c == c_desert_stone))
 			break;
 
-		vm->m_area.add_y(em, i, -1);
+		VoxelArea::add_y(em, i, -1);
 	}
 	return (y >= y_nodes_min) ? y : y_nodes_min - 1;
 }
@@ -529,7 +538,7 @@ void MapgenV6::makeChunk(BlockMakeData *data)
 	updateHeightmap(node_min, node_max);
 
 	const s16 max_spread_amount = MAP_BLOCKSIZE;
-	// Limit dirt flow area by 1 because mud is flown into neighbors.
+	// Limit dirt flow area by 1 because mud is flowed into neighbors
 	s16 mudflow_minpos = -max_spread_amount + 1;
 	s16 mudflow_maxpos = central_area_size.X + max_spread_amount - 2;
 
@@ -553,54 +562,56 @@ void MapgenV6::makeChunk(BlockMakeData *data)
 	updateHeightmap(node_min, node_max);
 
 	// Add dungeons
-	if ((flags & MG_DUNGEONS) && (stone_surface_max_y >= node_min.Y)) {
-		DungeonParams dp;
+	if ((flags & MG_DUNGEONS) && stone_surface_max_y >= node_min.Y &&
+			full_node_min.Y >= dungeon_ymin && full_node_max.Y <= dungeon_ymax) {
+		u16 num_dungeons = std::fmax(std::floor(
+			NoisePerlin3D(&np_dungeons, node_min.X, node_min.Y, node_min.Z, seed)), 0.0f);
 
-		dp.seed             = seed;
-		dp.c_water          = c_water_source;
-		dp.c_river_water    = c_water_source;
+		if (num_dungeons >= 1) {
+			PseudoRandom ps(blockseed + 4713);
 
-		dp.only_in_ground   = true;
-		dp.corridor_len_min = 1;
-		dp.corridor_len_max = 13;
-		dp.rooms_min        = 2;
-		dp.rooms_max        = 16;
-		dp.y_min            = -MAX_MAP_GENERATION_LIMIT;
-		dp.y_max            = MAX_MAP_GENERATION_LIMIT;
+			DungeonParams dp;
 
-		dp.np_density
-			= NoiseParams(0.9, 0.5, v3f(500.0, 500.0, 500.0), 0, 2, 0.8, 2.0);
-		dp.np_alt_wall
-			= NoiseParams(-0.4, 1.0, v3f(40.0, 40.0, 40.0), 32474, 6, 1.1, 2.0);
+			dp.seed              = seed;
+			dp.num_dungeons      = num_dungeons;
+			dp.only_in_ground    = true;
+			dp.corridor_len_min  = 1;
+			dp.corridor_len_max  = 13;
+			dp.num_rooms         = ps.range(2, 16);
+			dp.large_room_chance = (ps.range(1, 4) == 1) ? 1 : 0;
 
-		if (getBiome(0, v2s16(node_min.X, node_min.Z)) == BT_DESERT) {
-			dp.c_wall              = c_desert_stone;
-			dp.c_alt_wall          = CONTENT_IGNORE;
-			dp.c_stair             = c_stair_desert_stone;
+			dp.np_alt_wall
+				= NoiseParams(-0.4, 1.0, v3f(40.0, 40.0, 40.0), 32474, 6, 1.1, 2.0);
 
-			dp.diagonal_dirs       = true;
-			dp.holesize            = v3s16(2, 3, 2);
-			dp.room_size_min       = v3s16(6, 9, 6);
-			dp.room_size_max       = v3s16(10, 11, 10);
-			dp.room_size_large_min = v3s16(10, 13, 10);
-			dp.room_size_large_max = v3s16(18, 21, 18);
-			dp.notifytype          = GENNOTIFY_TEMPLE;
-		} else {
-			dp.c_wall              = c_cobble;
-			dp.c_alt_wall          = c_mossycobble;
-			dp.c_stair             = c_stair_cobble;
+			if (getBiome(0, v2s16(node_min.X, node_min.Z)) == BT_DESERT) {
+				dp.c_wall              = c_desert_stone;
+				dp.c_alt_wall          = CONTENT_IGNORE;
+				dp.c_stair             = c_stair_desert_stone;
 
-			dp.diagonal_dirs       = false;
-			dp.holesize            = v3s16(1, 2, 1);
-			dp.room_size_min       = v3s16(4, 4, 4);
-			dp.room_size_max       = v3s16(8, 6, 8);
-			dp.room_size_large_min = v3s16(8, 8, 8);
-			dp.room_size_large_max = v3s16(16, 16, 16);
-			dp.notifytype          = GENNOTIFY_DUNGEON;
+				dp.diagonal_dirs       = true;
+				dp.holesize            = v3s16(2, 3, 2);
+				dp.room_size_min       = v3s16(6, 9, 6);
+				dp.room_size_max       = v3s16(10, 11, 10);
+				dp.room_size_large_min = v3s16(10, 13, 10);
+				dp.room_size_large_max = v3s16(18, 21, 18);
+				dp.notifytype          = GENNOTIFY_TEMPLE;
+			} else {
+				dp.c_wall              = c_cobble;
+				dp.c_alt_wall          = c_mossycobble;
+				dp.c_stair             = c_stair_cobble;
+
+				dp.diagonal_dirs       = false;
+				dp.holesize            = v3s16(1, 2, 1);
+				dp.room_size_min       = v3s16(4, 4, 4);
+				dp.room_size_max       = v3s16(8, 6, 8);
+				dp.room_size_large_min = v3s16(8, 8, 8);
+				dp.room_size_large_max = v3s16(16, 16, 16);
+				dp.notifytype          = GENNOTIFY_DUNGEON;
+			}
+
+			DungeonGen dgen(ndef, &gennotify, &dp);
+			dgen.generate(vm, blockseed, full_node_min, full_node_max);
 		}
-
-		DungeonGen dgen(ndef, &gennotify, &dp);
-		dgen.generate(vm, blockseed, full_node_min, full_node_max);
 	}
 
 	// Add top and bottom side of water to transforming_liquid queue
@@ -691,7 +702,7 @@ int MapgenV6::generateGround()
 					vm->m_data[i] = n_air;
 				}
 			}
-			vm->m_area.add_y(em, i, 1);
+			VoxelArea::add_y(em, i, 1);
 		}
 	}
 
@@ -754,7 +765,7 @@ void MapgenV6::addMud()
 			vm->m_data[i] = addnode;
 			mudcount++;
 
-			vm->m_area.add_y(em, i, 1);
+			VoxelArea::add_y(em, i, 1);
 		}
 	}
 }
@@ -762,127 +773,112 @@ void MapgenV6::addMud()
 
 void MapgenV6::flowMud(s16 &mudflow_minpos, s16 &mudflow_maxpos)
 {
-	// 340ms @cs=8
-	//TimeTaker timer1("flow mud");
-
-	// Iterate a few times
-	for (s16 k = 0; k < 3; k++) {
+	const v3s16 &em = vm->m_area.getExtent();
+	static const v3s16 dirs4[4] = {
+		v3s16(0, 0, 1), // Back
+		v3s16(1, 0, 0), // Right
+		v3s16(0, 0, -1), // Front
+		v3s16(-1, 0, 0), // Left
+	};
+	
+	// Iterate twice
+	for (s16 k = 0; k < 2; k++) {
 		for (s16 z = mudflow_minpos; z <= mudflow_maxpos; z++)
 		for (s16 x = mudflow_minpos; x <= mudflow_maxpos; x++) {
-			// Invert coordinates every 2nd iteration
-			if (k % 2 == 0) {
-				x = mudflow_maxpos - (x - mudflow_minpos);
-				z = mudflow_maxpos - (z - mudflow_minpos);
-			}
+			// Node column position
+			v2s16 p2d;
+			// Invert coordinates on second iteration to process columns in
+			// opposite order, to avoid a directional bias.
+			if (k == 1)
+				p2d = v2s16(node_max.X, node_max.Z) - v2s16(x, z);
+			else
+				p2d = v2s16(node_min.X, node_min.Z) + v2s16(x, z);
 
-			// Node position in 2d
-			v2s16 p2d = v2s16(node_min.X, node_min.Z) + v2s16(x, z);
-
-			const v3s16 &em = vm->m_area.getExtent();
-			u32 i = vm->m_area.index(p2d.X, node_max.Y, p2d.Y);
 			s16 y = node_max.Y;
 
 			while (y >= node_min.Y) {
+				for (;; y--) {
+					u32 i = vm->m_area.index(p2d.X, y, p2d.Y);
+					MapNode *n = nullptr;
 
-			for (;; y--) {
-				MapNode *n = NULL;
-				// Find mud
-				for (; y >= node_min.Y; y--) {
-					n = &vm->m_data[i];
-					if (n->getContent() == c_dirt ||
-							n->getContent() == c_dirt_with_grass ||
-							n->getContent() == c_gravel)
+					// Find next mud node in mapchunk column
+					for (; y >= node_min.Y; y--) {
+						n = &vm->m_data[i];
+						if (n->getContent() == c_dirt ||
+								n->getContent() == c_dirt_with_grass ||
+								n->getContent() == c_gravel)
+							break;
+
+						VoxelArea::add_y(em, i, -1);
+					}
+					if (y < node_min.Y)
+						// No mud found in mapchunk column, process the next column
 						break;
 
-					vm->m_area.add_y(em, i, -1);
-				}
-
-				// Stop if out of area
-				//if(vmanip.m_area.contains(i) == false)
-				if (y < node_min.Y)
-					break;
-
-				if (n->getContent() == c_dirt ||
-						n->getContent() == c_dirt_with_grass) {
-					// Make it exactly mud
-					n->setContent(c_dirt);
-
-					// Don't flow it if the stuff under it is not mud
-					{
+					if (n->getContent() == c_dirt || n->getContent() == c_dirt_with_grass) {
+						// Convert dirt_with_grass to dirt
+						n->setContent(c_dirt);
+						// Don't flow mud if the stuff under it is not mud,
+						// to leave at least 1 node of mud.
 						u32 i2 = i;
-						vm->m_area.add_y(em, i2, -1);
-						// Cancel if out of area
-						if (!vm->m_area.contains(i2))
-							continue;
+						VoxelArea::add_y(em, i2, -1);
 						MapNode *n2 = &vm->m_data[i2];
 						if (n2->getContent() != c_dirt &&
 								n2->getContent() != c_dirt_with_grass)
+							// Find next mud node in column
 							continue;
 					}
-				}
 
-				v3s16 dirs4[4] = {
-					v3s16(0, 0, 1), // back
-					v3s16(1, 0, 0), // right
-					v3s16(0, 0, -1), // front
-					v3s16(-1, 0, 0), // left
-				};
-
-				// Check that upper is walkable. Cancel
-				// dropping if upper keeps it in place.
-				u32 i3 = i;
-				vm->m_area.add_y(em, i3, 1);
-				MapNode *n3 = NULL;
-
-				if (vm->m_area.contains(i3)) {
-					n3 = &vm->m_data[i3];
+					// Check if node above is walkable. If so, cancel
+					// flowing as if node above keeps it in place.
+					u32 i3 = i;
+					VoxelArea::add_y(em, i3, 1);
+					MapNode *n3 = &vm->m_data[i3];
 					if (ndef->get(*n3).walkable)
+						// Find next mud node in column
 						continue;
-				}
 
-				// Drop mud on side
-				for (const v3s16 &dirp : dirs4) {
-					u32 i2 = i;
-					// Move to side
-					vm->m_area.add_p(em, i2, dirp);
-					// Fail if out of area
-					if (!vm->m_area.contains(i2))
-						continue;
-					// Check that side is air
-					MapNode *n2 = &vm->m_data[i2];
-					if (ndef->get(*n2).walkable)
-						continue;
-					// Check that under side is air
-					vm->m_area.add_y(em, i2, -1);
-					if (!vm->m_area.contains(i2))
-						continue;
-					n2 = &vm->m_data[i2];
-					if (ndef->get(*n2).walkable)
-						continue;
-					// Loop further down until not air
-					bool dropped_to_unknown = false;
-					do {
-						vm->m_area.add_y(em, i2, -1);
+					// Drop mud on one side
+					for (const v3s16 &dirp : dirs4) {
+						u32 i2 = i;
+						// Move to side
+						VoxelArea::add_p(em, i2, dirp);
+						// Check that side is air
+						MapNode *n2 = &vm->m_data[i2];
+						if (ndef->get(*n2).walkable)
+							continue;
+
+						// Check that under side is air
+						VoxelArea::add_y(em, i2, -1);
 						n2 = &vm->m_data[i2];
-						// if out of known area
-						if (!vm->m_area.contains(i2) ||
-								n2->getContent() == CONTENT_IGNORE) {
-							dropped_to_unknown = true;
-							break;
+						if (ndef->get(*n2).walkable)
+							continue;
+
+						// Loop further down until not air
+						s16 y2 = y - 1; // y of i2
+						bool dropped_to_unknown = false;
+						do {
+							y2--;
+							VoxelArea::add_y(em, i2, -1);
+							n2 = &vm->m_data[i2];
+							// If out of area or in ungenerated world
+							if (y2 < full_node_min.Y || n2->getContent() == CONTENT_IGNORE) {
+								dropped_to_unknown = true;
+								break;
+							}
+						} while (!ndef->get(*n2).walkable);
+
+						if (!dropped_to_unknown) {
+							// Move up one so that we're in air
+							VoxelArea::add_y(em, i2, 1);
+							// Move mud to new place, and if outside mapchunk remove
+							// any decorations above removed or placed mud.
+							moveMud(i, i2, i3, p2d, em);
 						}
-					} while (!ndef->get(*n2).walkable);
-					// Loop one up so that we're in air
-					vm->m_area.add_y(em, i2, 1);
-
-					// Move mud to new place. Outside mapchunk remove
-					// any decorations above removed or placed mud.
-					if (!dropped_to_unknown)
-						moveMud(i, i2, i3, p2d, em);
-
-					// Done
-					break;
+						// Done, find next mud node in column
+						break;
+					}
 				}
-			}
 			}
 		}
 	}
@@ -912,17 +908,17 @@ void MapgenV6::moveMud(u32 remove_index, u32 place_index,
 				vm->m_data[above_remove_index].getContent() != c_water_source &&
 				vm->m_data[above_remove_index].getContent() != CONTENT_IGNORE) {
 			vm->m_data[above_remove_index] = n_air;
-			vm->m_area.add_y(em, above_remove_index, 1);
+			VoxelArea::add_y(em, above_remove_index, 1);
 		}
 		// Mud placed may have partially-buried a stacked decoration, search
 		// above and remove.
-		vm->m_area.add_y(em, place_index, 1);
+		VoxelArea::add_y(em, place_index, 1);
 		while (vm->m_area.contains(place_index) &&
 				vm->m_data[place_index].getContent() != CONTENT_AIR &&
 				vm->m_data[place_index].getContent() != c_water_source &&
 				vm->m_data[place_index].getContent() != CONTENT_IGNORE) {
 			vm->m_data[place_index] = n_air;
-			vm->m_area.add_y(em, place_index, 1);
+			VoxelArea::add_y(em, place_index, 1);
 		}
 	}
 }
@@ -996,7 +992,7 @@ void MapgenV6::placeTreesAndJungleGrass()
 				u32 vi = vm->m_area.index(x, y, z);
 				// place on dirt_with_grass, since we know it is exposed to sunlight
 				if (vm->m_data[vi].getContent() == c_dirt_with_grass) {
-					vm->m_area.add_y(em, vi, 1);
+					VoxelArea::add_y(em, vi, 1);
 					vm->m_data[vi] = n_junglegrass;
 				}
 			}
@@ -1066,7 +1062,7 @@ void MapgenV6::growGrass() // Add surface nodes
 						ndef->get(n).liquid_type != LIQUID_NONE ||
 						n.getContent() == c_ice)
 					break;
-				vm->m_area.add_y(em, i, -1);
+				VoxelArea::add_y(em, i, -1);
 			}
 			surface_y = (y >= full_node_min.Y) ? y : full_node_min.Y;
 		}
@@ -1080,10 +1076,10 @@ void MapgenV6::growGrass() // Add surface nodes
 			} else if (bt == BT_TUNDRA) {
 				if (c == c_dirt) {
 					vm->m_data[i] = n_snowblock;
-					vm->m_area.add_y(em, i, -1);
+					VoxelArea::add_y(em, i, -1);
 					vm->m_data[i] = n_dirt_with_snow;
 				} else if (c == c_stone && surface_y < node_max.Y) {
-					vm->m_area.add_y(em, i, 1);
+					VoxelArea::add_y(em, i, 1);
 					vm->m_data[i] = n_snowblock;
 				}
 			} else if (c == c_dirt) {
